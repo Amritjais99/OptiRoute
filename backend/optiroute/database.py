@@ -753,13 +753,13 @@ async def insert_cache_entry(
 ) -> bool:
     db = await get_connection()
     try:
-        await db.execute(
+        cursor = await db.execute(
             "INSERT OR IGNORE INTO semantic_cache "
             "(cache_id, prompt_hash, cached_response, model_id, client_id, owner_uid, exact_hash, context_hash, request_id, selected_chat_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (cache_id, prompt_hash, cached_response, model_id, client_id, owner_uid, exact_hash, context_hash, request_id, selected_chat_id),
         )
-        inserted = db.total_changes > 0
+        inserted = cursor.rowcount > 0
         await db.commit()
         return inserted
     finally:

@@ -13,6 +13,10 @@ from fastapi.testclient import TestClient
 from optiroute import database as db
 from optiroute.remote_db import Connection, encode, decode
 from optiroute.main import app
+from optiroute.engine.cache_manager import CacheManager
+from optiroute.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage
+from types import SimpleNamespace
+import numpy as np
 
 
 async def verify_storage(path):
@@ -55,6 +59,29 @@ async def verify_storage(path):
     await connection.execute("BEGIN IMMEDIATE")
     await connection.execute("UPDATE users SET organization_name = 'rolled back' WHERE client_id = ?", ("deployment-check",))
     await connection.close()
+
+    # Exercise the failed production path: saving a model answer before returning it.
+    manager = CacheManager()
+    original_model = CacheManager._model
+    CacheManager._model = SimpleNamespace(encode=lambda text, **kwargs: np.array([1.0, 0.0]))
+    try:
+        request = ChatCompletionRequest(messages=[{"role": "user", "content": "tell me about qutub minar"}])
+        response = ChatCompletionResponse(
+            model="openai/gpt-oss-20b",
+            choices=[Choice(message=ChoiceMessage(content="Qutub Minar is a historic minaret in Delhi."))],
+        )
+        assert await manager.check_cache(request, "deployment-check", "deployment-uid") is None
+        await manager.save_cache(request, response, "deployment-check", "deployment-uid")
+        hit = await manager.check_cache(request, "deployment-check", "deployment-uid")
+        assert hit and hit[0].choices[0].message.content == response.choices[0].message.content
+        assert hit[1] == "exact"
+        await manager.save_cache(request, response, "deployment-check", "deployment-uid")
+        connection = await connect()
+        row = await (await connection.execute("SELECT COUNT(*) FROM semantic_cache WHERE owner_uid = ?", ("deployment-uid",))).fetchone()
+        assert row[0] == 1, "Repeated saves must reuse the existing cache entry"
+        await connection.close()
+    finally:
+        CacheManager._model = original_model
     assert (await db.get_user_by_firebase_uid("deployment-uid"))["organization_name"] == "Check"
     connection = await connect()
     async with connection.execute("SELECT client_id FROM users WHERE firebase_uid = ?", ("deployment-uid",)) as cursor:
@@ -68,4 +95,4 @@ with tempfile.TemporaryDirectory() as directory:
     with TestClient(app) as client:
         assert client.get("/health").json() == {"status": "ok"}
         assert client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hello"}]}).status_code == 401
-    print("PASS: schema, user persistence across connections, rollback, row mapping, startup, health, authentication guard")
+    print("PASS: schema, persistence, rollback, prompt cache save, repeat cache hit, duplicate suppression, startup, health, authentication guard")
