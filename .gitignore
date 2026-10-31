@@ -9,3 +9,4 @@ __pycache__/
 backend/data/
 *firebase-adminsdk*.json
 .vercel/
+backend/.embeddings/
