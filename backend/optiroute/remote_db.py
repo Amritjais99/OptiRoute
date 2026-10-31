@@ -109,7 +109,7 @@ class Connection:
         requests = []
         implicit = not self.transaction and command in {"INSERT", "UPDATE", "DELETE", "REPLACE"}
         if implicit:
-            requests.append({"type": "execute", "stmt": {"sql": "BEGIN IMMEDIATE"}})
+            await self._pipeline([{"type": "execute", "stmt": {"sql": "BEGIN IMMEDIATE"}}])
         requests.append({"type": "execute", "stmt": {"sql": sql, "args": [encode(v) for v in args], "want_rows": True}})
         if implicit or command == "BEGIN":
             self.transaction = True

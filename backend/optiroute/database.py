@@ -420,8 +420,9 @@ async def init_db() -> None:
             )
 
         # Seed demo data
-        for stmt in _seed_demo_data_sql():
-            await db.execute(stmt)
+        # Batch these idempotent statements to stay within remote transaction limits.
+        await db.commit()
+        await db.executescript("\n".join(_seed_demo_data_sql()))
 
         await db.commit()
     finally:
