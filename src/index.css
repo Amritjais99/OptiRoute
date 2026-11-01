@@ -174,3 +174,18 @@
 .markdown-response .katex-display {
   overflow-wrap: normal;
 }
+/* Compact, keyboard-accessible controls for the home page team portraits. */
+.team-carousel-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border: 1px solid #dbe0ec;
+  border-radius: 50%;
+  color: #365574;
+  transition: background-color 180ms, border-color 180ms;
+}
+.team-carousel-arrow:hover { background-color: #eff7ff; border-color: #a8d3ff; }
+.team-carousel-arrow:focus-visible { outline: 2px solid #0568d0; outline-offset: 3px; }
