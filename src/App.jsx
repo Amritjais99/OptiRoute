@@ -3,6 +3,7 @@ import PublicLayout from './components/layouts/PublicLayout';
 import DashboardLayout from './components/layouts/DashboardLayout';
 import ProtectedRoute from './components/ProtectedRoute';
 import HomePage from './pages/HomePage';
+import CopyrightPage from './pages/CopyrightPage';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import PromptPage from './pages/PromptPage';
@@ -20,6 +21,7 @@ export default function App() {
           {/* Public pages with nav */}
           <Route element={<PublicLayout />}>
             <Route path="/" element={<HomePage />} />
+            <Route path="/copyright" element={<CopyrightPage />} />
           </Route>
 
           {/* Standalone pages (no shared nav) */}

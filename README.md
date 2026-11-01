@@ -2,6 +2,14 @@
 
 React/Vite frontend and FastAPI backend for user-owned AI model routing.
 
+## Copyright and reuse
+
+Copyright (c) 2026 the respective OptiRoute authors and contributors. All rights reserved in their original copyrightable contributions. Original project material is not offered under a public open-source license; see [LICENSE](LICENSE). Each contributor retains their own rights; this notice does not assign ownership or override existing agreements.
+
+Third-party software, fonts, models, user material, and other third-party assets retain their own terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Public notices are available at `/copyright` and `/third-party-notices.txt`.
+
+The team confirmed that the original site design and imagery were team-created. Keep source files, contribution history, and any photographer or contributor permissions with the project records. Obtain the relevant rights holders' agreement before adopting a different license. No copyright registration or trademark registration is represented by the footer notice.
+
 ## Free hosting
 
 - Frontend: Vercel, Node.js 22, `npm ci`, `npm run build`, output `dist`.

@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run notices && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "notices": "node scripts/generate-third-party-notices.mjs"
   },
   "dependencies": {
     "firebase": "^13.0.0",
@@ -30,5 +31,6 @@
     "postcss": "^8.5.28",
     "tailwindcss": "^3.4.19",
     "vite": "^8.3.0"
-  }
+  },
+  "license": "UNLICENSED"
 }

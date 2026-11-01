@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import CopyrightNotice from './CopyrightNotice';
 
 const footerLinks = [
   { label: 'Features', href: '#' },
@@ -23,9 +23,7 @@ export default function Footer() {
             </a>
           ))}
         </div>
-        <p className="font-geist-mono text-label text-olive-label">
-          © 2026 · All rights reserved
-        </p>
+        <CopyrightNotice />
       </div>
     </footer>
   );

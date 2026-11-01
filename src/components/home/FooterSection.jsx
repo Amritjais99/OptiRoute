@@ -1,14 +1,13 @@
 import React from 'react';
 import footerImg from '../../assets/footer-img.png';
+import CopyrightNotice from './CopyrightNotice';
 
 const FooterSection = () => {
   return (
     <footer className="w-full">
       <div className="bg-[#FFF546] p-[20px] flex flex-col gap-[20px] rounded-t-[16px]">
         <div className="flex justify-end w-full">
-          <p className="font-source-serif font-normal text-[16px] md:text-[18px] text-center text-[#66640F]">
-            © 2026 · All rights reserved
-          </p>
+          <CopyrightNotice />
         </div>
 
         {/* Footer Image */}
