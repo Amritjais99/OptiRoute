@@ -9,8 +9,9 @@ export default function CopyrightPage() {
   }, []);
 
   return (
+    <div className="min-h-screen w-full" style={{ background: 'linear-gradient(180deg, #A8D3FF 0%, #FFF4DF 40%, #FFF4DF 100%)' }}>
     <main className="mx-auto max-w-3xl px-6 pt-32 pb-20 font-source-serif text-[#365574] leading-relaxed">
-      <p className="mb-4 font-geist-mono text-sm uppercase tracking-widest text-[#0568D0]">OptiRoute</p>
+      <p className="mb-4 font-geist-mono text-sm uppercase tracking-widest text-[#174D83]">OptiRoute</p>
       <h1 ref={heading} tabIndex={-1} className="mb-8 font-radio-canada text-4xl md:text-5xl font-medium tracking-tight text-black outline-none">Copyright &amp; credits</h1>
       <div className="space-y-8">
         <section>
@@ -35,5 +36,6 @@ export default function CopyrightPage() {
       </div>
       <Link to="/" className="mt-12 inline-block rounded-full border border-[#C6D5E5] px-6 py-3 font-radio-canada text-black hover:bg-[#EFF7FF]">Back to home</Link>
     </main>
+    </div>
   );
 }
