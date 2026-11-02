@@ -378,6 +378,9 @@ const SignupPage = () => {
               </button>
             </div>
 
+            <p className="text-center font-source-serif text-[14px] text-[#365574]">
+              Before creating an account, read our <Link to="/privacy" className="underline underline-offset-4">Privacy policy</Link> and <Link to="/terms" className="underline underline-offset-4">Terms of use</Link>.
+            </p>
             <p className="text-center font-source-serif text-[14px] text-[#6C6C6C]">
               Already have an account?{' '}
               <Link to="/login" className="text-[#000000] font-bold hover:underline">

@@ -4,6 +4,7 @@ import DashboardLayout from './components/layouts/DashboardLayout';
 import ProtectedRoute from './components/ProtectedRoute';
 import HomePage from './pages/HomePage';
 import CopyrightPage from './pages/CopyrightPage';
+import { ContactPage, PrivacyPage, TermsPage } from './pages/SupportPages';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import PromptPage from './pages/PromptPage';
@@ -22,6 +23,9 @@ export default function App() {
           <Route element={<PublicLayout />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/copyright" element={<CopyrightPage />} />
+            <Route path="/contact" element={<ContactPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/terms" element={<TermsPage />} />
           </Route>
 
           {/* Standalone pages (no shared nav) */}
