@@ -1,0 +1,12 @@
+FROM python:3.12-slim-bookworm
+WORKDIR /app/backend
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken EMBEDDING_CACHE_DIR=/opt/embeddings PYTHONUNBUFFERED=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+COPY backend/requirements.txt backend/requirements-file-upload.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-file-upload.txt \
+    && python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+COPY backend/ ./
+RUN python prepare_embeddings.py
+CMD ["sh", "-c", "uvicorn optiroute.file_upload_production:app --host 0.0.0.0 --port ${PORT:-10000}"]

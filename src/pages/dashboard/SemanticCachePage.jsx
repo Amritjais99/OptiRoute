@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiCall, API_BASE } from '../../utils/auth';
+import { SavedAttachments } from '../../components/ui/PromptAttachments';
 
 
 export default function SemanticCachePage() {
@@ -132,6 +133,7 @@ export default function SemanticCachePage() {
                     {entry.conversation_id ? (
                       <Link to={`/prompt?conversation=${encodeURIComponent(entry.conversation_id)}&turn=${encodeURIComponent(entry.chat_id)}`} className="block break-words text-sm font-semibold underline-offset-2 hover:underline">{entry.query}</Link>
                     ) : <p className="break-words text-sm font-semibold">{entry.query}</p>}
+                    <SavedAttachments chatId={entry.chat_id} files={entry.attachment_files} />
                   </div>
                 </div>
                 <div className="mt-4 min-w-0 pl-7">
@@ -201,6 +203,7 @@ export default function SemanticCachePage() {
                       ) : (
                         <p className="text-[13px] text-white font-bold font-geist-mono mb-1.5" title="Original chat unavailable">{entry.query}</p>
                       )}
+                      <SavedAttachments chatId={entry.chat_id} files={entry.attachment_files} />
                     </td>
 
                     {/* Cached Response */}

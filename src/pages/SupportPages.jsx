@@ -60,6 +60,7 @@ export function PrivacyPage() {
       <Section title="Information we handle">
         <p><strong>Account information:</strong> your name, email address, and Firebase user identifier. Firebase Authentication handles email/password and Google sign-in; OptiRoute’s application database does not store your account password.</p>
         <p><strong>AI activity:</strong> submitted prompts, relevant conversation context, model responses, saved chat history, semantic cache data, and usage records such as model selection, timestamps, latency, token counts, and estimated costs.</p>
+        <p><strong>File attachments:</strong> when uploads are available, OptiRoute encrypts originals and saves them with successful chat turns. You can download them from your chat or a linked cache entry.</p>
         <p><strong>Model connections:</strong> provider and model choices, routing settings, and API keys you choose to save. Saved provider keys are encrypted by the backend and decrypted when needed to contact the provider. They are not end-to-end encrypted from the service operator.</p>
         <p><strong>Technical and support information:</strong> hosting providers may process IP addresses, request metadata, and diagnostic logs. If you email us, we receive your address and the content you send.</p>
       </Section>
@@ -69,7 +70,7 @@ export function PrivacyPage() {
       <Section title="Services involved">
         <p>Firebase provides authentication, Vercel hosts the frontend, Render runs the backend, and Turso stores application data. These services may process data outside your country.</p>
         <p>The website also loads fonts from Google Fonts and jsDelivr. Your browser sends technical request information, such as your IP address, to those services when fetching fonts.</p>
-        <p>When a request needs a model, OptiRoute sends the prompt and relevant context to the AI provider used by your routing configuration. Provider authentication uses the applicable API key. Providers have their own retention and data-use policies; OptiRoute does not promise zero retention by every provider.</p>
+        <p>When a request needs a model, OptiRoute sends the prompt and relevant context to the AI provider used by your routing configuration. This can include files or text extracted from them when you continue a chat or retry an answer. Provider authentication uses the applicable API key. Providers have their own retention and data-use policies.</p>
         <p>See <a className={linkStyle} href="https://firebase.google.com/support/privacy">Firebase’s privacy information</a> and your connected provider’s policy, such as <a className={linkStyle} href="https://console.groq.com/docs/your-data">Groq’s data-handling information</a>, before submitting content.</p>
       </Section>
       <Section title="Browser storage and security">
@@ -78,6 +79,7 @@ export function PrivacyPage() {
       </Section>
       <Section title="Retention and your choices">
         <p>There is currently no fixed automatic deletion schedule for account and chat records. Data is retained to support the features above until removed through available controls or a verified request. Chat and semantic-cache deletion controls are available in the app; deleting one item does not necessarily remove all related usage records.</p>
+        <p>Deleting a chat removes its saved attachments and linked cache entries from the active database.</p>
         <p>For account deletion, access, correction, or a broader data-removal request, <Link className={linkStyle} to="/contact">contact the team</Link>. Full account deletion is currently handled manually. Provider-held records and backups may follow separate retention schedules, so immediate deletion of every copy cannot be promised.</p>
       </Section>
       <Section title="Questions and changes">

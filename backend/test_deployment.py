@@ -10,9 +10,13 @@ from pathlib import Path
 os.environ.setdefault("FIREBASE_PROJECT_ID", "optiroute-10488")
 
 from fastapi.testclient import TestClient
+from cryptography.fernet import Fernet
+from unittest.mock import patch
 from optiroute import database as db
 from optiroute.remote_db import Connection, encode, decode
 from optiroute.main import app
+from optiroute.config import get_config
+from optiroute.connections import config_for_user
 from optiroute.engine.cache_manager import CacheManager
 from optiroute.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage
 from types import SimpleNamespace
@@ -22,6 +26,7 @@ import numpy as np
 async def verify_storage(path):
     async def connect():
         local = sqlite3.connect(path, check_same_thread=False)
+        local.execute("PRAGMA foreign_keys=ON")
         baton = None
         sequence = 0
         def server(request):
@@ -80,6 +85,42 @@ async def verify_storage(path):
         row = await (await connection.execute("SELECT COUNT(*) FROM semantic_cache WHERE owner_uid = ?", ("deployment-uid",))).fetchone()
         assert row[0] == 1, "Repeated saves must reuse the existing cache entry"
         await connection.close()
+
+        # Existing production-shaped data must still be usable after startup with uploads enabled.
+        encryption_key = Fernet.generate_key()
+        ciphertext = Fernet(encryption_key).encrypt(b"fixture-provider-key").decode()
+        await db.create_model_connection({
+            "connection_id": "existing-connection", "client_id": "deployment-check",
+            "tier": "light", "name": "Existing model", "provider": "groq",
+            "model_id": response.model, "encrypted_api_key": ciphertext, "max_tokens": 8192,
+            "cost_per_1k_input": 0.0, "cost_per_1k_output": 0.0,
+        })
+        await db.save_chat("existing-chat", "deployment-check", "Existing chat",
+                           request.messages[0].content, response.model_dump_json(),
+                           response.model, "light", 0.0, 0.0)
+        with patch.dict(os.environ, {"FEATURE_FILE_UPLOAD": "true",
+                                     "WORKFLOW_ENCRYPTION_KEY": encryption_key.decode()}):
+            from optiroute.file_upload import Upload, encrypt_uploads, load_saved_upload
+
+            await db.init_db()
+            config, connected = await config_for_user(get_config(), "deployment-check")
+            assert connected and config.tiers["light"].models[0].resolve_api_key() == "fixture-provider-key"
+            assert (await db.get_model_connections("deployment-check"))[0]["encrypted_api_key"] == ciphertext
+            chat = await db.get_chat_by_id("existing-chat", "deployment-check")
+            assert chat and chat["title"] == "Existing chat"
+            assert await manager.check_cache(request, "deployment-check", "deployment-uid")
+            file = Upload("fixture.txt", "text/plain", b"sample content\n" * 47000, "")
+            parts = encrypt_uploads([file])
+            assert len(parts) > 1 and all("sample content" not in part[2] for part in parts)
+            await db.save_chat("file-chat", "deployment-check", "File chat", "Read this file",
+                               response.model_dump_json(), response.model, "light", 0.0, 0.0,
+                               attachment_parts=parts)
+            await db.init_db()
+            restored = await load_saved_upload("file-chat", "deployment-check", "file-chat", 0, vars(file))
+            assert restored.content == file.content
+            assert not await db.get_attachment_parts("file-chat", "other-owner", "file-chat", 0)
+            await db.delete_cache_entries("deployment-uid", "deployment-check", [], ["file-chat"])
+            assert not await db.get_attachment_parts("file-chat", "deployment-check", "file-chat", 0)
     finally:
         CacheManager._model = original_model
     assert (await db.get_user_by_firebase_uid("deployment-uid"))["organization_name"] == "Check"
@@ -95,4 +136,4 @@ with tempfile.TemporaryDirectory() as directory:
     with TestClient(app) as client:
         assert client.get("/health").json() == {"status": "ok"}
         assert client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hello"}]}).status_code == 401
-    print("PASS: schema, persistence, rollback, prompt cache save, repeat cache hit, duplicate suppression, startup, health, authentication guard")
+    print("PASS: schema, Turso adapter, rollback, cache isolation, startup, authentication, and preservation of existing chats and encrypted model connections")

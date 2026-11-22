@@ -160,6 +160,14 @@ CREATE TABLE IF NOT EXISTS chat_history (
     FOREIGN KEY (client_id) REFERENCES users(client_id)
 );
 
+CREATE TABLE IF NOT EXISTS chat_attachment_parts (
+    chat_id TEXT NOT NULL REFERENCES chat_history(chat_id) ON DELETE CASCADE,
+    file_index INTEGER NOT NULL,
+    part_index INTEGER NOT NULL,
+    ciphertext TEXT NOT NULL,
+    PRIMARY KEY (chat_id, file_index, part_index)
+);
+
 -- Indexes for common access patterns
 CREATE INDEX IF NOT EXISTS idx_workflows_client      ON workflows(client_id);
 CREATE INDEX IF NOT EXISTS idx_model_connections_client ON model_connections(client_id, tier);
@@ -1136,7 +1144,8 @@ async def save_chat(chat_id: str, client_id: str, title: str, prompt: str,
                     response_json: str, model_used: str, tier_used: str,
                     cost_usd: float, latency_ms: float,
                     conversation_id: str | None = None, turn_index: int = 0,
-                    context_hash: str = "", request_id: str | None = None) -> None:
+                    context_hash: str = "", request_id: str | None = None,
+                    attachment_parts: list[tuple[int, int, str]] | None = None) -> None:
     """Insert a new chat history entry."""
     db = await get_connection()
     try:
@@ -1147,6 +1156,11 @@ async def save_chat(chat_id: str, client_id: str, title: str, prompt: str,
             (chat_id, client_id, title, prompt, response_json, model_used, tier_used,
              cost_usd, latency_ms, conversation_id or chat_id, turn_index, context_hash, request_id)
         )
+        for file_index, part_index, ciphertext in attachment_parts or ():
+            await db.execute(
+                "INSERT INTO chat_attachment_parts (chat_id, file_index, part_index, ciphertext) "
+                "VALUES (?, ?, ?, ?)", (chat_id, file_index, part_index, ciphertext),
+            )
         await db.commit()
     finally:
         await db.close()
@@ -1205,12 +1219,27 @@ async def get_chat_by_id(chat_id: str, client_id: str) -> dict | None:
     db = await get_connection()
     try:
         cursor = await db.execute(
-            "SELECT chat_id, title, prompt, response, model_used, tier_used, cost_usd, latency_ms, created_at "
+            "SELECT chat_id, conversation_id, title, prompt, response, model_used, tier_used, cost_usd, latency_ms, created_at "
             "FROM chat_history WHERE chat_id = ? AND client_id = ?",
             (chat_id, client_id)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def get_attachment_parts(chat_id: str, client_id: str, conversation_id: str, file_index: int) -> list[str]:
+    db = await get_connection()
+    try:
+        cursor = await db.execute(
+            "SELECT part.ciphertext FROM chat_attachment_parts AS part "
+            "JOIN chat_history AS chat ON chat.chat_id = part.chat_id "
+            "WHERE part.chat_id = ? AND chat.client_id = ? AND chat.conversation_id = ? "
+            "AND part.file_index = ? ORDER BY part.part_index",
+            (chat_id, client_id, conversation_id, file_index),
+        )
+        return [row["ciphertext"] for row in await cursor.fetchall()]
     finally:
         await db.close()
 

@@ -4,7 +4,10 @@ import { auth } from './firebase';
 
 const AuthContext = createContext();
 
-export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+/* global __OPTIROUTE_PROXY_API__ */
+export const API_BASE = __OPTIROUTE_PROXY_API__
+  ? `${window.location.origin}/optiroute-api`
+  : import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);

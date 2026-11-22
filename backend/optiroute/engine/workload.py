@@ -77,7 +77,7 @@ def _task_effort(prompt: str) -> tuple[float, str, list[str]]:
     return effort, kind, reasons
 
 
-def evaluate_workload(request: ChatCompletionRequest) -> dict:
+def evaluate_workload(request: ChatCompletionRequest, file_tokens: int = 0) -> dict:
     users = [m.content or "" for m in request.messages if m.role == "user"]
     prompt = users[-1].strip() if users else ""
     prior = users[-2].strip() if len(users) > 1 else ""
@@ -168,6 +168,12 @@ def evaluate_workload(request: ChatCompletionRequest) -> dict:
         score += 0.05
         reasons.append("long response requested")
 
+    if file_tokens >= 8000:
+        score = max(score, 0.7)
+        reasons.append(f"large attachment input ({file_tokens:,} estimated tokens)")
+    elif file_tokens >= 2000:
+        score = max(score, 0.4)
+        reasons.append(f"attachment input ({file_tokens:,} estimated tokens)")
     score = round(min(score, 1.0), 2)
     category = "heavy" if score >= 0.7 else "mid" if score >= 0.4 else "light"
     return {

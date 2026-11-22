@@ -83,13 +83,17 @@ class CacheManager:
     def _context_hash(self, request: ChatCompletionRequest) -> str:
         """Keep follow-up answers separate when their prior turns differ."""
         prior_messages = request.messages[:-1]
-        if not prior_messages:
+        if not prior_messages and not request._attachment_digest:
             return ""
         context = [
             {"role": msg.role, "content": msg.content or ""}
             for msg in prior_messages
         ]
         payload = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        if request._attachment_digest:
+            from optiroute.file_capabilities import FILE_SCOPE_PREFIX
+
+            return FILE_SCOPE_PREFIX + hashlib.sha256((request._attachment_digest + payload).encode("utf-8")).hexdigest()
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _needs_prior_context(self, prompt: str, has_prior_turn: bool) -> bool:
@@ -107,14 +111,26 @@ class CacheManager:
         return False
 
     def _cache_scope(self, request: ChatCompletionRequest) -> str:
+        if request._attachment_digest:
+            return self._context_hash(request)
         has_prior_turn = any(m.role in ("user", "assistant") for m in request.messages[:-1])
         prompt = self._extract_prompt(request)
         return self._context_hash(request) if self._needs_prior_context(prompt, has_prior_turn) else ""
 
     def _candidate_allowed(self, candidate_prompt: str, candidate_context: str, scope: str) -> bool:
+        from optiroute.file_capabilities import FILE_SCOPE_PREFIX
+
         if scope:
             return candidate_context == scope
+        if candidate_context and candidate_context.startswith(FILE_SCOPE_PREFIX):
+            return False
         return not self._needs_prior_context(candidate_prompt, bool(candidate_context))
+
+    def saved_scope(self, prompt: str, context_hash: str | None) -> str:
+        from optiroute.file_capabilities import FILE_SCOPE_PREFIX
+
+        scope = context_hash or ""
+        return scope if scope.startswith(FILE_SCOPE_PREFIX) or self._needs_prior_context(prompt, bool(scope)) else ""
 
     def _strict_prompt(self, prompt: str) -> str:
         normalized = unicodedata.normalize("NFKC", prompt).casefold().strip()

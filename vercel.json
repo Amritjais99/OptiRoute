@@ -2,5 +2,40 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "rewrites": [{"source": "/((?!assets/|favicon.svg|icons.svg|third-party-notices.txt).*)", "destination": "/index.html"}]
+  "rewrites": [
+    {
+      "source": "/optiroute-api/api/:path*",
+      "has": [{ "type": "host", "value": "^optiroute-git-feature-file-upload-mathematicaamrit-7168\\.vercel\\.app$" }],
+      "destination": "https://optiroute-file-upload-preview.onrender.com/api/:path*"
+    },
+    {
+      "source": "/optiroute-api/v1/:path*",
+      "has": [{ "type": "host", "value": "^optiroute-git-feature-file-upload-mathematicaamrit-7168\\.vercel\\.app$" }],
+      "destination": "https://optiroute-file-upload-preview.onrender.com/v1/:path*"
+    },
+    {
+      "source": "/optiroute-api/health",
+      "has": [{ "type": "host", "value": "^optiroute-git-feature-file-upload-mathematicaamrit-7168\\.vercel\\.app$" }],
+      "destination": "https://optiroute-file-upload-preview.onrender.com/health"
+    },
+    {
+      "source": "/optiroute-api/api/:path*",
+      "has": [{ "type": "host", "value": "^optiroute-(?:amritjais99|umber)\\.vercel\\.app$" }],
+      "destination": "https://optiroute-api-amritjais99.onrender.com/api/:path*"
+    },
+    {
+      "source": "/optiroute-api/v1/:path*",
+      "has": [{ "type": "host", "value": "^optiroute-(?:amritjais99|umber)\\.vercel\\.app$" }],
+      "destination": "https://optiroute-api-amritjais99.onrender.com/v1/:path*"
+    },
+    {
+      "source": "/optiroute-api/health",
+      "has": [{ "type": "host", "value": "^optiroute-(?:amritjais99|umber)\\.vercel\\.app$" }],
+      "destination": "https://optiroute-api-amritjais99.onrender.com/health"
+    },
+    {
+      "source": "/((?!assets/|optiroute-api/|favicon.svg|icons.svg|third-party-notices.txt).*)",
+      "destination": "/index.html"
+    }
+  ]
 }

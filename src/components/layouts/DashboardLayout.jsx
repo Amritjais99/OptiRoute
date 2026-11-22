@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { NavLink, Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../utils/auth';
 
+/* global __OPTIROUTE_PREVIEW__ */
 const navItems = [
   { path: '/dashboard/overview', label: 'Overview' },
   { path: '/dashboard/routing-policies', label: 'Routing Policies' },
@@ -143,6 +144,11 @@ export default function DashboardLayout() {
         
         {/* Main Content Area */}
         <main className={`flex-1 w-full max-w-[1400px] mx-auto relative z-0 flex flex-col items-center ${isOverview ? 'px-4 pb-4 pt-2 md:px-6 md:pb-6 md:pt-2' : 'p-4 md:p-6'}`}>
+          {__OPTIROUTE_PREVIEW__ && (
+            <p className="mx-auto mb-3 w-fit rounded-full bg-white/75 px-4 py-2 text-center font-radio-canada text-sm text-[#315575]">
+              Preview · Chats and model connections are separate from production.
+            </p>
+          )}
           <Outlet />
         </main>
       </div>
