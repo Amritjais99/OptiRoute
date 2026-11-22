@@ -50,7 +50,7 @@ def finish(client_id: str, request_id: str, result: dict) -> None:
         _results[key] = (time.monotonic() + 600, {"status": "completed", "result": result})
 
 
-def fail(client_id: str, request_id: str, error: str) -> None:
+def fail(client_id: str, request_id: str, error: str | dict) -> None:
     key = (client_id, request_id)
     if key not in _cancelled:
         _results[key] = (time.monotonic() + 600, {"status": "failed", "error": error})

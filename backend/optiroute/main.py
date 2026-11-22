@@ -29,7 +29,8 @@ from optiroute.auth_routes import auth_router
 from optiroute.connections import router as connections_router, config_for_user
 from optiroute import inflight
 from fastapi import Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from optiroute import file_capabilities
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -91,6 +92,8 @@ async def lifespan(app: FastAPI):
 
     # Phase 3: initialise SQLite tables and seed data
     await init_db()
+    if file_capabilities.enabled():
+        await file_capabilities.init_file_capabilities()
     logger.info("Database initialised (%s).", "Turso" if os.environ.get("TURSO_DATABASE_URL") else "SQLite")
 
     yield
@@ -195,6 +198,10 @@ async def start_chat_completion_job(
     current_user: dict = Depends(get_current_user),
 ):
     """Run a long completion independently of the browser connection."""
+    return _start_job(request, authorization, current_user)
+
+
+def _start_job(request, authorization, current_user, uploads=None, on_done=None):
     if not request.request_id:
         raise HTTPException(status_code=400, detail="A request ID is required.")
     if request.retry_from_chat_id and not request.conversation_id:
@@ -205,7 +212,7 @@ async def start_chat_completion_job(
     async def run_job():
         try:
             response = await asyncio.wait_for(
-                _run_chat_completion(request, authorization, current_user),
+                _run_chat_completion(request, authorization, current_user, uploads),
                 timeout=PROMPT_DEADLINE_SECONDS,
             )
             inflight.finish(client_id, request_id, json.loads(response.body))
@@ -214,9 +221,12 @@ async def start_chat_completion_job(
         except TimeoutError:
             inflight.fail(client_id, request_id, DEADLINE_MESSAGE)
         except HTTPException as exc:
-            inflight.fail(client_id, request_id, str(exc.detail))
+            inflight.fail(client_id, request_id, exc.detail if uploads else str(exc.detail))
         except Exception as exc:
-            logger.exception("Chat job %s failed", request_id)
+            if uploads:
+                logger.error("Attachment job %s failed (%s)", request_id, type(exc).__name__)
+            else:
+                logger.exception("Chat job %s failed", request_id)
             inflight.fail(client_id, request_id, f"Request failed ({type(exc).__name__}). Please try again.")
         finally:
             inflight.unregister(client_id, request_id)
@@ -230,7 +240,48 @@ async def start_chat_completion_job(
     except asyncio.CancelledError as exc:
         task.cancel()
         raise HTTPException(status_code=409, detail="This request was cancelled before it started.") from exc
+    if on_done:
+        task.add_done_callback(on_done)
     return {"request_id": request_id, "status": "running"}
+
+
+if file_capabilities.enabled():
+    from optiroute.file_upload import UploadGate, read_uploads
+
+    upload_gate = UploadGate()
+
+    @app.post("/v1/chat/completions/attachment-jobs", status_code=202)
+    async def start_attachment_job(
+        incoming: Request,
+        authorization: str | None = Header(default=None),
+        current_user: dict = Depends(get_current_user),
+    ):
+        upload_gate.acquire(current_user["uid"])
+        try:
+            raw, uploads = await read_uploads(incoming)
+            try:
+                request = ChatCompletionRequest.model_validate_json(raw)
+            except ValidationError:
+                raise HTTPException(422, "Invalid prompt. Reselect your files and try again.") from None
+            if (len(request.messages) != 1 or request.messages[0].role != "user"
+                    or request.tools or request.n != 1 or request.stream
+                    or (request.max_tokens is not None and not 1 <= request.max_tokens <= 200000)):
+                raise HTTPException(422, "Send one prompt with your files and use a valid output limit.")
+            return _start_job(request, authorization, current_user, uploads, upload_gate.release)
+        except BaseException:
+            upload_gate.release()
+            raise
+
+    @app.get("/api/v1/file-capabilities")
+    async def get_file_capabilities(current_user: dict = Depends(get_current_user)):
+        return {key: value.model_dump() for key, value in
+                (await file_capabilities.user_overrides(current_user["client_id"])).items()}
+
+    @app.put("/api/v1/file-capabilities/{connection_id}")
+    async def save_file_capabilities(connection_id: str, settings: file_capabilities.Capabilities,
+                                     current_user: dict = Depends(get_current_user)):
+        await file_capabilities.update_override(current_user["client_id"], connection_id, settings)
+        return settings
 
 
 @app.post("/v1/chat/completions/{request_id}/cancel")
@@ -257,6 +308,7 @@ async def _run_chat_completion(
     request: ChatCompletionRequest,
     authorization: str | None,
     current_user: dict,
+    uploads=None,
 ) -> JSONResponse:
     """
     OpenAI-compatible chat completions endpoint.
@@ -273,6 +325,11 @@ async def _run_chat_completion(
     if not user_message or user_message.role != "user" or not (user_message.content or "").strip():
         raise HTTPException(status_code=400, detail="A user prompt is required.")
     user_prompt = user_message.content.strip()
+    if uploads:
+        from optiroute.file_upload import UploadError, fit_models, plan_for, prepare_files, upload_digest
+        from optiroute.engine.workload import evaluate_workload
+
+        request._attachment_digest = upload_digest(uploads)
     progress_id = str(request.request_id) if request.request_id else None
 
     def progress(message: str) -> None:
@@ -334,6 +391,9 @@ async def _run_chat_completion(
             source = turns_by_id.get(request.retry_from_chat_id)
             if not source or source["prompt"] != user_prompt:
                 raise HTTPException(status_code=400, detail="The selected answer was not found in this chat.")
+            original_digest = (json.loads(source["response"]).get("optiroute") or {}).get("attachment_digest", "")
+            if original_digest != request._attachment_digest:
+                raise HTTPException(status_code=409, detail="Reattach the original files with the same PDF page ranges to retry this answer.")
             if source["chat_id"] in superseded_answers:
                 raise HTTPException(status_code=409, detail="This answer already has a heavier version. Retry that version instead.")
             retry_tier = config.next_tier(source["tier_used"])
@@ -381,11 +441,37 @@ async def _run_chat_completion(
         tokens_pruned = 0
 
     context_hash = cache_mgr._context_hash(request)
-    complexity = router.evaluate_complexity(request)
+    prepared_files = None
+    warnings = []
+    if uploads:
+        progress("Reading your attachments...")
+        models = [model for name, tier in config.tiers.items() if not retry_tier or name == retry_tier
+                  for model in tier.models]
+        processing = asyncio.create_task(asyncio.to_thread(prepare_files, uploads, models))
+        try:
+            prepared_files = await asyncio.shield(processing)
+            file_tokens = await asyncio.to_thread(fit_models, config, request, prepared_files, retry_tier)
+        except asyncio.CancelledError:
+            # Wait for the worker to release its files before admitting another upload.
+            await asyncio.gather(processing, return_exceptions=True)
+            raise
+        except UploadError as exc:
+            raise HTTPException(exc.status, exc.detail) from None
+        complexity = evaluate_workload(request, file_tokens)
+    else:
+        complexity = router.evaluate_complexity(request)
     router.apply_policies(request, complexity)
     progress("Choosing a model...")
     try:
-        planned_model, planned_decision = router.route_request(request, complexity=complexity, target_tier=retry_tier)
+        file_tier = None
+        if prepared_files and request.model == "auto" and not request.tier_override:
+            order = config.tier_order
+            preferred = order.index(complexity["category"])
+            file_tier = next(name for name in order[preferred:] + list(reversed(order[:preferred]))
+                             if config.tiers[name].models)
+        planned_model, planned_decision = router.route_request(
+            request, complexity=complexity, target_tier=retry_tier or file_tier,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if retry_tier and planned_decision.selected_tier != retry_tier:
@@ -427,6 +513,8 @@ async def _run_chat_completion(
                 complexity_signals=complexity,
             )
             response = cached_response
+            if prepared_files:
+                warnings = (cached_response.optiroute or {}).get("attachment_warnings", [])
             decision.cost_usd = 0.0
             decision.latency_ms = 0.0
         else:
@@ -503,6 +591,7 @@ async def _run_chat_completion(
                                         note_error(f"{_progress_model_name(model_config.id)}: {reason}."),
                                         progress(f"Retrying {_progress_model_name(model_config.id)} after {reason.lower()} (retry {attempt} of 1)..."),
                                     ),
+                                    **({"files": prepared_files} if prepared_files else {}),
                                 ),
                                 timeout=remaining,
                             )
@@ -510,7 +599,7 @@ async def _run_chat_completion(
                             break
                         except Exception as exc:
                             ensure_not_cancelled()
-                            if (isinstance(exc, httpx.HTTPStatusError)
+                            if (not prepared_files and isinstance(exc, httpx.HTTPStatusError)
                                     and exc.response.status_code == 413
                                     and not compacted_for_413):
                                 compacted_for_413 = True
@@ -525,9 +614,14 @@ async def _run_chat_completion(
                                 note_error(f"{_progress_model_name(model_config.id)} rejected a large request (HTTP 413).")
                                 progress(f"Shortening context and retrying {_progress_model_name(model_config.id)}...")
                                 continue
-                            logger.error("Provider call failed (%s): %s", type(exc).__name__, exc)
+                            if prepared_files:
+                                logger.error("Attachment provider call failed (%s)", type(exc).__name__)
+                            else:
+                                logger.error("Provider call failed (%s): %s", type(exc).__name__, exc)
                             if isinstance(exc, TimeoutError):
                                 note_error(f"{_progress_model_name(model_config.id)} exceeded its 90-second time budget.")
+                            elif prepared_files:
+                                note_error("The provider could not process the attachment request.")
                             else:
                                 note_error(f"{_progress_model_name(model_config.id)}: {_provider_failure_detail(exc)}")
                             if not inflight.is_cancelled(current_user["client_id"], progress_id):
@@ -543,6 +637,14 @@ async def _run_chat_completion(
                                     allowed_tiers={retry_tier} if retry_tier else None,
                                 )
                             except ValueError:
+                                if prepared_files:
+                                    if isinstance(exc, UploadError):
+                                        raise HTTPException(exc.status, exc.detail) from None
+                                    raise HTTPException(502, detail={
+                                        "code": "provider_file_rejected",
+                                        "message": "The selected provider could not process the attachment request. "
+                                                   "Try a smaller file, a shorter PDF range, or another model.",
+                                    }) from None
                                 detail = f"All eligible connected models failed. Last attempt with {_progress_model_name(model_config.id)}: {_provider_failure_detail(exc)}"
                                 raise HTTPException(status_code=502, detail=detail) from exc
                             if incomplete and request.max_tokens is None:
@@ -594,6 +696,9 @@ async def _run_chat_completion(
             if retry_tier and (decision.cache_hit or decision.selected_tier != retry_tier):
                 raise HTTPException(status_code=502, detail="The heavier retry did not produce a fresh answer from the requested tier.")
             chat_id = str(_uuid.uuid4())
+            if prepared_files:
+                warnings = (await asyncio.to_thread(plan_for, model_config, request, prepared_files)).warnings
+                response.optiroute = {"attachment_warnings": warnings}
             if quality_ok:
                 await cache_mgr.save_cache(
                     request,
@@ -635,6 +740,9 @@ async def _run_chat_completion(
         "recommended_model": planned_model.id if decision.cache_hit else decision.selected_model,
         "explanation": decision.complexity_signals.get("explanation", "")
     }
+    if prepared_files:
+        response.optiroute["attachment_digest"] = request._attachment_digest
+        response.optiroute["attachment_warnings"] = warnings
     if not quality_ok:
         response.optiroute["quality_warning"] = "This answer may be incomplete and was not saved to cache."
     if retry_tier:
@@ -916,7 +1024,7 @@ async def api_chat_detail(chat_id: str, current_user: dict = Depends(get_current
         except (TypeError, ValueError):
             continue
         for turn in turns:
-            scope = (turn["context_hash"] or "") if manager._needs_prior_context(turn["prompt"], bool(turn["context_hash"])) else ""
+            scope = manager.saved_scope(turn["prompt"], turn["context_hash"])
             if scope != entry["context_hash"] or manager._strict_prompt(turn["prompt"]) != manager._strict_prompt(cached_prompt):
                 continue
             if entry["selected_chat_id"] == turn["chat_id"]:
@@ -955,7 +1063,7 @@ async def api_select_cached_answer(conversation_id: str, selection: CacheAnswerS
     if not manager._reusable(response):
         raise HTTPException(status_code=400, detail="This answer is incomplete and cannot be cached.")
     prompt = selected["prompt"]
-    context_hash = (selected["context_hash"] or "") if manager._needs_prior_context(prompt, bool(selected["context_hash"])) else ""
+    context_hash = manager.saved_scope(prompt, selected["context_hash"])
     await manager._store_prompt_cache(
         prompt, response, current_user["client_id"], current_user["uid"],
         context_hash, replace_existing=True, selected_chat_id=selection.chat_id,

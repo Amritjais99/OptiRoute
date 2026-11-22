@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { apiCall, API_BASE } from '../../utils/auth';
 import ProviderWorkflowDialog from './ProviderWorkflowDialog';
+import ModelFileCapabilities from '../../components/ui/ModelFileCapabilities';
+import { FILE_UPLOAD } from '../../utils/fileUpload';
 
 const tiers = [
   { id: 'light', title: 'Workflow A', name: 'Document Processing', description: 'Quick, straightforward tasks' },
@@ -20,11 +22,18 @@ export default function RoutingPoliciesPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [fileSettings, setFileSettings] = useState(null);
 
   useEffect(() => {
     apiCall(`${API_BASE}/api/v1/model-connections`)
       .then(async res => { const data = await res.json(); if (!res.ok) throw new Error(data.detail || 'Could not load models.'); setConnections(data); })
       .catch(err => setError(err.message));
+    if (FILE_UPLOAD) {
+      apiCall(`${API_BASE}/api/v1/file-capabilities`)
+        .then(res => res.ok ? res.json() : null)
+        .then(setFileSettings)
+        .catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
@@ -79,7 +88,7 @@ export default function RoutingPoliciesPage() {
     {notice && <div role="status" className="mb-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</div>}
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">{tiers.map(item => <button key={item.id} type="button" onClick={() => { setTier(item.id); setAdding(false); setError(''); }} className={`min-w-0 text-left rounded-2xl border p-5 transition-colors ${tier === item.id ? 'border-[#567998] bg-white shadow-md' : 'border-white/80 bg-white/65 hover:bg-white'}`}><span className="inline-block rounded-full bg-[#e9f3f7] px-3 py-1 text-xs font-semibold text-[#315575]">{item.id === 'mid' ? 'Medium' : item.id[0].toUpperCase() + item.id.slice(1)} tier</span><h2 className="font-radio-canada font-bold text-lg mt-3">{item.title}: {item.name}</h2><p className="text-sm text-[#64748b] mt-1">{item.description}</p><p className="text-xs font-geist-mono mt-4">{connections.filter(model => model.tier === item.id).length} connected model(s)</p></button>)}</div>
     <section className="rounded-2xl bg-white p-5 md:p-7 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 mb-5"><div><h2 className="font-radio-canada font-bold text-xl">{selected.title}: {selected.name}</h2><p className="text-sm text-[#64748b] mt-1">Used for {selected.description.toLowerCase()}.</p></div><button type="button" onClick={() => setAdding(true)} className="text-sm font-semibold text-[#315575] hover:underline">+ Add to this workflow</button></div>
-      {shown.length === 0 ? <div className="rounded-xl border border-dashed border-[#c5d0da] p-8 text-center text-sm text-[#64748b]">No models connected in this tier yet. Add one to make it available for routing.</div> : <div className="space-y-3">{shown.map((item) => <div key={item.connection_id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#e6ebf0] p-4"><div className="min-w-0"><div className="flex items-center gap-2"><strong className="truncate">{item.name}</strong></div><p className="font-geist-mono text-xs text-[#64748b] break-all mt-1">{item.provider} · {item.model_id}</p><p className="text-xs text-[#8190a0] mt-1">API key saved securely</p></div><button type="button" onClick={() => removeModel(item)} className="rounded-lg border border-[#d9e1e8] px-3 py-2 text-sm text-[#6f4040] hover:bg-red-50">Remove</button></div>)}</div>}
+      {shown.length === 0 ? <div className="rounded-xl border border-dashed border-[#c5d0da] p-8 text-center text-sm text-[#64748b]">No models connected in this tier yet. Add one to make it available for routing.</div> : <div className="space-y-3">{shown.map((item) => <div key={item.connection_id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#e6ebf0] p-4"><div className="min-w-0"><div className="flex items-center gap-2"><strong className="truncate">{item.name}</strong></div><p className="font-geist-mono text-xs text-[#64748b] break-all mt-1">{item.provider} · {item.model_id}</p><p className="text-xs text-[#8190a0] mt-1">API key saved securely</p>{FILE_UPLOAD && fileSettings && <ModelFileCapabilities connection={item} saved={fileSettings[item.connection_id]} onSaved={value => setFileSettings(current => ({ ...current, [item.connection_id]: value }))} />}</div><button type="button" onClick={() => removeModel(item)} className="rounded-lg border border-[#d9e1e8] px-3 py-2 text-sm text-[#6f4040] hover:bg-red-50">Remove</button></div>)}</div>}
     </section>
     {adding && createPortal(<div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#102235]/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) setAdding(false); }}><form role="dialog" aria-modal="true" aria-label={`Add a model to ${selected.title}`} onSubmit={addModel} className="w-full min-w-0 max-w-[540px] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl bg-white p-4 sm:p-6 md:p-8 shadow-xl"><div className="flex justify-between items-start gap-4 mb-5"><div><h2 className="font-radio-canada text-xl font-bold">Add a model to {selected.title}</h2><p className="text-sm text-[#64748b] mt-1">Enter a provider API key and the exact model ID available on your account.</p></div><button type="button" aria-label="Close" onClick={() => setAdding(false)} className="text-2xl text-[#64748b]">×</button></div>{error && <p role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}<div className="grid gap-4">
       {field('Display name', 'name', 'text', { maxLength: 80, placeholder: 'e.g. My fast model' })}

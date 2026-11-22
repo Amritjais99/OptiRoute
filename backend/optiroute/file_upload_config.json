@@ -1,0 +1,34 @@
+{
+  "maxFiles": 3,
+  "maxFileBytes": 10000000,
+  "outputReserve": 0.2,
+  "defaultContextTokens": 8192,
+  "maxPdfPages": 100,
+  "maxOcrPages": 20,
+  "maxImagePixels": 20000000,
+  "types": {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "csv": "text/csv"
+  },
+  "models": {
+    "groq/openai/gpt-oss-120b": { "maxContextTokens": 131072 },
+    "groq/openai/gpt-oss-20b": { "maxContextTokens": 131072 },
+    "groq/llama-3.1-8b-instant": { "maxContextTokens": 131072 },
+    "groq/llama-3.3-70b-versatile": { "maxContextTokens": 131072 },
+    "openai/gpt-4.1-mini": { "image": true, "pdf": true, "maxContextTokens": 1047576 },
+    "openai/gpt-4.1": { "image": true, "pdf": true, "maxContextTokens": 1047576 },
+    "openai/gpt-4o-mini": { "image": true, "pdf": true, "maxContextTokens": 128000 },
+    "openai/gpt-4o": { "image": true, "pdf": true, "maxContextTokens": 128000 },
+    "anthropic/claude-sonnet-4-6": { "image": true, "pdf": true, "maxContextTokens": 200000 },
+    "anthropic/claude-sonnet-4-5-20250929": { "image": true, "pdf": true, "maxContextTokens": 200000 },
+    "gemini/gemini-2.5-flash": { "image": true, "pdf": true, "docx": true, "maxContextTokens": 1048576 },
+    "gemini/gemini-2.5-pro": { "image": true, "pdf": true, "docx": true, "maxContextTokens": 1048576 }
+  }
+}

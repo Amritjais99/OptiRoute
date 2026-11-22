@@ -102,6 +102,7 @@ async def call_model(
     model_config: ModelConfig,
     request: ChatCompletionRequest,
     on_retry=None,
+    attachment_content: tuple[int, list[dict]] | None = None,
 ) -> tuple[ChatCompletionResponse, float]:
     """
     Send a chat completion request to a single LLM backend.
@@ -126,7 +127,9 @@ async def call_model(
         If the provider doesn't respond in time.
     """
     if model_config.provider == "anthropic":
-        return await _call_anthropic(model_config, request, on_retry)
+        return await _call_anthropic(model_config, request, on_retry, attachment_content)
+    if model_config.provider == "gemini" and attachment_content:
+        return await _call_gemini_attachment(model_config, request, on_retry, attachment_content)
 
     api_key = model_config.resolve_api_key()
     url = f"{model_config.api_base.rstrip('/')}/chat/completions"
@@ -136,6 +139,9 @@ async def call_model(
         "model": model_config.id,
         "messages": [msg.model_dump(exclude_none=True) for msg in request.messages],
     }
+    if attachment_content:
+        index, parts = attachment_content
+        payload["messages"][index]["content"] = parts
 
     # Pass through optional parameters only if set.
     if request.temperature is not None:
@@ -193,6 +199,7 @@ async def call_model_with_continuation(
     request: ChatCompletionRequest,
     on_continue=None,
     on_retry=None,
+    files=None,
 ) -> tuple[ChatCompletionResponse, float]:
     """Continue a truncated text response with the same model before failover."""
     if request.tools or request.response_format or request.n != 1:
@@ -204,7 +211,16 @@ async def call_model_with_continuation(
     completion_tokens = 0
     for part in range(3):
         try:
-            response, _ = await call_model(model_config, working, on_retry)
+            if files:
+                from optiroute.file_upload import plan_for
+
+                attachment_index = len(request.messages) - 1
+                plan = await asyncio.to_thread(plan_for, model_config, working, files,
+                                               payload=True, attachment_index=attachment_index)
+                native = (attachment_index + 1, plan.content) if plan.content else None
+                response, _ = await call_model(model_config, plan.request, on_retry, native)
+            else:
+                response, _ = await call_model(model_config, working, on_retry)
             limited = False
         except IncompleteResponseError as exc:
             response = exc.partial_response
@@ -241,16 +257,63 @@ async def call_model_with_continuation(
     raise RuntimeError("Continuation loop ended unexpectedly")
 
 
+async def _call_gemini_attachment(model_config, request, on_retry, attachment_content):
+    """Send files in a stateless Gemini Interaction using inline content parts."""
+    target, parts = attachment_content
+    system = "\n\n".join(message.content for message in request.messages
+                         if message.role == "system" and message.content)
+    steps = []
+    for index, message in enumerate(request.messages):
+        if message.role in {"user", "assistant"} and message.content:
+            content = parts if index == target else [{"type": "text", "text": message.content}]
+            steps.append({"type": "user_input" if message.role == "user" else "model_output",
+                          "content": content})
+    generation_config = {"max_output_tokens": request.max_tokens}
+    if request.temperature is not None:
+        generation_config["temperature"] = request.temperature
+    if request.top_p is not None:
+        generation_config["top_p"] = request.top_p
+    payload = {"model": model_config.id.removeprefix("models/"), "input": steps, "store": False,
+               "system_instruction": system, "generation_config": generation_config}
+    if request.response_format and request.response_format.type == "json_object":
+        payload["response_mime_type"] = "application/json"
+    headers = {"x-goog-api-key": model_config.resolve_api_key(), "Content-Type": "application/json"}
+    url = f"{model_config.api_base.removesuffix('/openai')}/interactions"
+    start = time.perf_counter()
+    async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+        response = await _post_with_retries(client, url, payload, headers, model_config.id, on_retry)
+    data = response.json()
+    answer = "".join(part["text"] for step in data.get("steps", []) if step.get("type") == "model_output"
+                     for part in step.get("content", []) if part.get("type") == "text")
+    if not answer:
+        raise ValueError("Gemini returned no attachment answer")
+    usage = data.get("usage", {})
+    result = _parse_provider_response({
+        "id": data["id"], "model": model_config.id,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": answer},
+                     "finish_reason": "length" if data.get("status") == "incomplete" else "stop"}],
+        "usage": {"prompt_tokens": usage.get("total_input_tokens", 0),
+                  "completion_tokens": usage.get("total_output_tokens", 0),
+                  "total_tokens": usage.get("total_tokens", 0)},
+    }, model_config.id)
+    if data.get("status") == "incomplete":
+        raise IncompleteResponseError("Gemini reached the output limit", result)
+    if data.get("status") != "completed":
+        raise ValueError("Gemini did not complete the attachment request")
+    return result, (time.perf_counter() - start) * 1000
+
+
 async def _call_anthropic(
-    model_config: ModelConfig, request: ChatCompletionRequest, on_retry=None
+    model_config: ModelConfig, request: ChatCompletionRequest, on_retry=None, attachment_content=None
 ) -> tuple[ChatCompletionResponse, float]:
     """Translate text chat turns to Anthropic's native Messages API."""
     if request.tools or (request.response_format and request.response_format.type == "json_object"):
         raise ValueError("This Anthropic connection does not support tools or JSON mode")
     system = "\n\n".join(message.content for message in request.messages if message.role == "system" and message.content)
     messages = [
-        {"role": message.role, "content": message.content}
-        for message in request.messages
+        {"role": message.role, "content": attachment_content[1]
+         if attachment_content and index == attachment_content[0] else message.content}
+        for index, message in enumerate(request.messages)
         if message.role in ("user", "assistant") and message.content
     ]
     if not messages:

@@ -4,6 +4,8 @@ import { signOut } from 'firebase/auth';
 import { auth } from '../utils/firebase';
 import { getAuthHeaders, API_BASE } from '../utils/auth';
 import MarkdownRenderer from '../components/ui/MarkdownRenderer';
+import { AttachmentPicker, AttachmentChips } from '../components/ui/PromptAttachments';
+import { FILE_UPLOAD, errorMessage, extension, uploadBody } from '../utils/fileUpload';
 
 const orderConversationTurns = (turns) => {
   const chronological = turns
@@ -68,6 +70,7 @@ const PromptPage = () => {
   const [cacheChoiceLoading, setCacheChoiceLoading] = useState(null);
   const [cacheChoiceError, setCacheChoiceError] = useState(null);
   const [prompt, setPrompt] = useState('');
+  const [attachments, setAttachments] = useState([]);
   const promptInputRef = useRef(null);
   const chatScrollRef = useRef(null);
   const pendingAnswerScrollRef = useRef(null);
@@ -201,6 +204,7 @@ const PromptPage = () => {
     setActiveParentId(null);
     setFocusedTurnId(null);
     setPrompt('');
+    setAttachments([]);
     setTurns([]);
     setCachedAnswerIds([]);
     setCacheChoiceError(null);
@@ -297,6 +301,16 @@ const PromptPage = () => {
 
   const handleSubmit = async (retryTurn = null) => {
     const submittedPrompt = retryTurn ? retryTurn.prompt : prompt.trim();
+    const retryWithFile = Boolean(retryTurn?.response?.optiroute?.attachment_digest);
+    const chosenFiles = FILE_UPLOAD && (!retryTurn || retryWithFile) ? attachments : [];
+    if (retryWithFile && !chosenFiles.length) {
+      setRetryError({ chatId: retryTurn.chat_id, message: 'Reattach the original files and use the same PDF page ranges, then retry.' });
+      return;
+    }
+    if (chosenFiles.some(item => extension(item.file.name) === 'pdf' && item.pages.trim() && !/^\d{1,6}(-\d{1,6})?$/.test(item.pages.trim()))) {
+      setError('Enter a PDF page range like 1-10, or leave it blank for all pages.');
+      return;
+    }
     let retryChatId = retryTurn?.chat_id || retryTurn?.response?.optiroute?.chat_id;
     const conversationId = retryTurn
       ? retryTurn.response?.optiroute?.conversation_id || activeConversationId
@@ -340,18 +354,20 @@ const PromptPage = () => {
         throw new Error('Could not identify the saved answer for a heavier retry.');
       }
       active.started = true;
-      const res = await fetch(`${API_BASE}/v1/chat/completions${retryTurn ? '/retry/jobs' : '/jobs'}`, {
+      const request = {
+        model: "auto",
+        request_id: active.requestId,
+        messages: [{ role: "user", content: submittedPrompt }],
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+        ...(!retryTurn && activeParentId ? { parent_chat_id: activeParentId } : {}),
+        ...(retryChatId ? { retry_from_chat_id: retryChatId } : {}),
+      };
+      const route = chosenFiles.length ? '/attachment-jobs' : retryTurn ? '/retry/jobs' : '/jobs';
+      const res = await fetch(`${API_BASE}/v1/chat/completions${route}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...headers },
+        headers: chosenFiles.length ? headers : { "Content-Type": "application/json", ...headers },
         signal: active.controller.signal,
-        body: JSON.stringify({
-           model: "auto",
-           request_id: active.requestId,
-           messages: [{ role: "user", content: submittedPrompt }],
-           ...(conversationId ? { conversation_id: conversationId } : {}),
-           ...(!retryTurn && activeParentId ? { parent_chat_id: activeParentId } : {}),
-           ...(retryChatId ? { retry_from_chat_id: retryChatId } : {})
-        })
+        body: chosenFiles.length ? uploadBody(request, chosenFiles) : JSON.stringify(request),
       });
       if (active.cancelled || active.cancelRequested || active.discardResult) return;
       if (res.status === 401) {
@@ -398,7 +414,7 @@ const PromptPage = () => {
             data = data.result;
             break;
           }
-          if (data.status === 'failed') throw new Error(data.error || 'All connected models failed to complete the answer.');
+          if (data.status === 'failed') throw new Error(errorMessage(data.error, 'All connected models failed to complete the answer.'));
           if (data.status === 'cancelled') return;
           throw new Error('The answer job was interrupted. Reload the chat to check its result.');
         }
@@ -407,7 +423,7 @@ const PromptPage = () => {
       if (!res.ok) {
         const message = retryTurn && res.status === 404
           ? 'The backend does not support heavier retries yet. Restart the backend and try again.'
-          : data.detail || `Server returned error (${res.status})`;
+          : errorMessage(data.detail, `Server returned error (${res.status}). Please try again.`);
         if (retryTurn) setRetryError({ chatId: retryChatId, message });
         else setError(message);
       } else if (retryTurn && (
@@ -434,6 +450,7 @@ const PromptPage = () => {
         setActiveParentId(data.optiroute?.chat_id || null);
         refreshCachedAnswers(data.optiroute?.conversation_id || activeConversationId).catch(() => {});
         if (!retryTurn) setPrompt('');
+        if (chosenFiles.length) setAttachments([]);
         // Refresh the recent chats list so the new chat appears
         fetchRecentChats();
       }
@@ -482,10 +499,12 @@ const PromptPage = () => {
           {progressErrors.map((message, index) => <p key={`${index}-${message}`}>{message}</p>)}
         </div>
       )}
+      {FILE_UPLOAD && <AttachmentChips attachments={attachments} setAttachments={setAttachments} disabled={loading} />}
       <form
         className="mx-auto flex w-full max-w-[820px] items-end gap-3 rounded-[20px] border border-white/70 bg-white px-4 py-2 shadow-lg focus-within:ring-2 focus-within:ring-[#788FA8]/40"
         onSubmit={(event) => { event.preventDefault(); handleSubmit(); }}
       >
+        {FILE_UPLOAD && <AttachmentPicker attachments={attachments} setAttachments={setAttachments} notify={setError} disabled={loading} />}
         <label htmlFor="prompt-composer" className="sr-only">Your prompt</label>
         <textarea
           id="prompt-composer"
@@ -716,6 +735,9 @@ const PromptPage = () => {
                           {turn.response.optiroute.quality_warning}
                         </p>
                       )}
+                      {FILE_UPLOAD && turn.response.optiroute.attachment_warnings?.map(warning => (
+                        <p key={warning} role="status" className="rounded-md bg-amber-100 px-3 py-2 font-sans text-amber-900">{warning}</p>
+                      ))}
                       {turn.response.optiroute.cache_hit && (
                         <p className="mb-2 rounded-md bg-green-100 px-3 py-2 font-bold text-green-800">
                           Served from cache — no model call for this prompt

@@ -11,7 +11,7 @@ import uuid
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +77,7 @@ class ChatCompletionRequest(BaseModel):
     parent_chat_id: Optional[str] = None
     retry_from_chat_id: Optional[str] = None
     request_id: Optional[UUID] = None
+    _attachment_digest: str = PrivateAttr(default="")
 
 
 # ---------------------------------------------------------------------------

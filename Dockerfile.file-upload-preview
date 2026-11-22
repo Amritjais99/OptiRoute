@@ -1,0 +1,31 @@
+FROM node:22-bookworm-slim AS web
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit
+COPY index.html vite.config.js postcss.config.js tailwind.config.js ./
+COPY legal legal
+COPY scripts scripts
+COPY public public
+COPY src src
+COPY backend/optiroute/file_upload_config.json backend/optiroute/file_upload_config.json
+ARG FEATURE_FILE_UPLOAD=false
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_FIREBASE_AUTH_DOMAIN
+ARG VITE_FIREBASE_PROJECT_ID
+ARG VITE_FIREBASE_APP_ID
+ENV VITE_PREVIEW_SAME_ORIGIN=true
+RUN npm run build
+
+FROM python:3.12-slim-bookworm
+WORKDIR /app/backend
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken EMBEDDING_CACHE_DIR=/opt/embeddings PYTHONUNBUFFERED=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+COPY backend/requirements.txt backend/requirements-file-upload.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-file-upload.txt \
+    && python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+COPY backend/ ./
+RUN python prepare_embeddings.py
+COPY --from=web /build/dist /app/site
+CMD ["sh", "-c", "uvicorn optiroute.file_upload_preview:app --host 0.0.0.0 --port ${PORT:-10000}"]
