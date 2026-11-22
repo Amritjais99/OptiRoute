@@ -13,7 +13,7 @@ The baseline tag is `pre-file-upload-20261122` at
 
 ## Revert the feature after an approved squash merge
 
-Find the single `feat: file upload (OCR/native)` commit on `main`. Verify its SHA in the output below and use it as `FEATURE_COMMIT_SHA`.
+Find the single `feat: file upload (OCR/native)` commit on `main`. Verify its SHA in the output below and use it as `FEATURE_COMMIT_SHA`. If uploads were enabled, archive the file-scoped records using the procedure below before reverting.
 
 ```sh
 git fetch origin --tags
@@ -24,7 +24,29 @@ git push -u origin revert/file-upload
 gh pr create --base main --head revert/file-upload --title "Revert file upload" --body "Restore the pre-upload code path."
 ```
 
-Review and merge the revert pull request, then confirm the production deployments built from the revert. Keep the additive `file_capability_overrides` table and file cache records in place. Deleting either is unnecessary for rollback. Disable the backend flag before deploying the revert, and retain it as the first recovery option after future releases.
+Review and merge the revert pull request, then confirm the production deployments built from the revert. The capability override table can remain in place. Disable uploads before deploying the revert.
+
+### Archive file-scoped records before a code revert
+
+Flag-off mode keeps attachment answers isolated. Older versions of the cache can find file answers through their chat-history fallback, so reverting the code after real uploads requires archiving those records first. This step is unnecessary when reverting a deployment that never processed uploads. Back up the database and run this during a maintenance window with uploads disabled. Preserve the archive tables with the same access restrictions as the main database. The archived attachment turns will no longer appear in the older version's chat history.
+
+```sql
+BEGIN IMMEDIATE;
+CREATE TABLE file_upload_rollback_chats AS
+  SELECT * FROM chat_history WHERE context_hash LIKE 'files-v1:%';
+CREATE TABLE file_upload_rollback_cache AS
+  SELECT * FROM semantic_cache WHERE context_hash LIKE 'files-v1:%';
+CREATE TABLE file_upload_rollback_cache_links AS
+  SELECT log_id, cache_id FROM audit_logs
+  WHERE cache_id IN (SELECT cache_id FROM file_upload_rollback_cache);
+UPDATE audit_logs SET cache_id = NULL
+  WHERE log_id IN (SELECT log_id FROM file_upload_rollback_cache_links);
+DELETE FROM semantic_cache WHERE cache_id IN (SELECT cache_id FROM file_upload_rollback_cache);
+DELETE FROM chat_history WHERE chat_id IN (SELECT chat_id FROM file_upload_rollback_chats);
+COMMIT;
+```
+
+If a later turn refers to an archived attachment answer, forked chat history may be incomplete on the older version. Use the feature flag when preserving accessible conversations is a priority. Restore archived data only with an attachment-aware version running and after checking for conflicts with newer records.
 
 ## Standalone Render preview
 
@@ -56,6 +78,8 @@ python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 cd backend
 python -m unittest -v test_file_upload
 python test_deployment.py
+# POSIX shell
+TEST_UPLOAD_FLAG_OFF=true python -m unittest -v test_file_upload.UploadFlow.test_disabled_routes_and_text_cache
 ```
 
 - Report token counts as estimates. Native image and PDF processing can vary by provider. Check each provider's own payload, context, and account limits in the hosted preview.
