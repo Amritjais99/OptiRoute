@@ -76,13 +76,7 @@ The preview and production URLs have separate Vercel rewrites. A session on the 
 
 1. In Turso, verify that a backup or restore point is available for the existing production database. Record a baseline using an existing production account. Check its chat history, model connections, and cache without deleting or changing records. Keep the existing Firebase project and user identity.
 2. Keep the existing production Render service, branch, and environment. Preserve the exact `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `WORKFLOW_ENCRYPTION_KEY`, and `FIREBASE_PROJECT_ID`. The encryption key is required to read existing model keys. Keep `REQUIRE_REMOTE_DATABASE=true`. Do not copy the preview environment into production.
-3. After the approved squash merge, keep the feature flag off while switching the existing production service to the Docker runtime. Use `./Dockerfile.file-upload-preview` for the image and override the **Docker Command** with:
-
-   ```sh
-   sh -c 'uvicorn optiroute.file_upload_production:app --host 0.0.0.0 --port "${PORT:-10000}"'
-   ```
-
-   The production entry point requires the Turso credentials and encryption key. It will fail startup rather than fall back to an empty local database. The image supplies OCR and the tokenizer. Verify the production logs report Turso, the original account has the same chats and model connections, and a normal text prompt succeeds with an existing saved key.
+3. After the approved squash merge, keep the feature flag off while switching the existing production service to the Docker runtime. Use the root `./Dockerfile` and its default command. The production entry point requires the existing Turso credentials and encryption key and fails startup if they are unavailable. The image supplies OCR and the tokenizer. Verify the production logs report Turso, the original account has the same chats and model connections, and a normal text prompt succeeds with an existing saved key.
 4. Enable uploads on production Render first, then set the flag for the **Production** environment in Vercel and rebuild. Verify the existing account again and test an attachment through the production rewrite. Disable uploads using the steps at the top of this file if verification fails.
 
 Startup adds a table for encrypted attachment parts and preserves existing accounts, chats, model connections, and cache entries. The model capability registry is read from configuration. Preview SQLite data is separate.
