@@ -24,6 +24,7 @@
     "groq/openai/gpt-oss-20b": { "maxContextTokens": 131072 },
     "groq/llama-3.1-8b-instant": { "maxContextTokens": 131072 },
     "groq/llama-3.3-70b-versatile": { "maxContextTokens": 131072 },
+    "groq/qwen/qwen3.8-27b": { "image": true, "imageTokens": 2048, "maxContextTokens": 131072 },
     "openai/gpt-4.1-mini": { "image": true, "pdf": true, "maxContextTokens": 1047576 },
     "openai/gpt-4.1": { "image": true, "pdf": true, "maxContextTokens": 1047576 },
     "openai/gpt-4o-mini": { "image": true, "pdf": true, "maxContextTokens": 128000 },

@@ -24,7 +24,7 @@ git push -u origin revert/file-upload
 gh pr create --base main --head revert/file-upload --title "Revert file upload" --body "Restore the pre-upload code path."
 ```
 
-Review and merge the revert pull request, then confirm the production deployments built from the revert. The capability override table can remain in place. Disable uploads before deploying the revert.
+Review and merge the revert pull request, then confirm the production deployments built from the revert. Disable uploads before deploying the revert.
 
 ### Archive file-scoped records before a code revert
 
@@ -67,7 +67,22 @@ Use Firebase email/password for test sign-in. Google popups also require the pre
 
 The client and Render count combined file bytes. The limit is 4 MB (4,194,304 bytes) shared by up to three files, with a separate allowance for bounded multipart framing. A PDF range reduces processing but does not shrink the bytes sent by the browser. Export that range to a smaller PDF to reduce the upload size.
 
-Production, if separately approved, needs the backend runtime to install `backend/requirements-file-upload.txt`, install Tesseract and its English language data, and prefetch the `o200k_base` tokenizer into `TIKTOKEN_CACHE_DIR`. The preview Docker image supplies these. Before enabling production uploads, add host-specific rewrites to the production backend and verify them. The preview rewrites apply only to the preview alias.
+## Production rollout after approval
+
+The preview and production URLs have separate Vercel rewrites. A session on the production URL will continue to use the existing Turso data because the rewrites for the production hosts point to the existing production Render service.
+
+1. In Turso, verify that a backup or restore point is available for the existing production database. Record a baseline using an existing production account. Check its chat history, model connections, and cache without deleting or changing records. Keep the existing Firebase project and user identity.
+2. Keep the existing production Render service, branch, and environment. Preserve the exact `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `WORKFLOW_ENCRYPTION_KEY`, and `FIREBASE_PROJECT_ID`. The encryption key is required to read existing model keys. Keep `REQUIRE_REMOTE_DATABASE=true`. Do not copy the preview environment into production.
+3. After the approved squash merge, keep the feature flag off while switching the existing production service to the Docker runtime. Use `./Dockerfile.file-upload-preview` for the image and override the **Docker Command** with:
+
+   ```sh
+   sh -c 'uvicorn optiroute.file_upload_production:app --host 0.0.0.0 --port "${PORT:-10000}"'
+   ```
+
+   The production entry point requires the Turso credentials and encryption key. It will fail startup rather than fall back to an empty local database. The image supplies OCR and the tokenizer. Verify the production logs report Turso, the original account has the same chats and model connections, and a normal text prompt succeeds with an existing saved key.
+4. Enable uploads on production Render first, then set the flag for the **Production** environment in Vercel and rebuild. Verify the existing account again and test an attachment through the production rewrite. Disable uploads using the steps at the top of this file if verification fails.
+
+The upload code uses the existing tables. It adds no production migration for capabilities and does not replace accounts, chats, model connections, or cache entries. SQLite data created on the preview is separate.
 
 ## Test commands and limits
 

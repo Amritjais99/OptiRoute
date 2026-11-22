@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from optiroute import database as db
 from optiroute.auth import get_current_user
 from optiroute.config import AppConfig, ModelConfig
-from optiroute import file_capabilities
 
 
 # Fixed endpoints prevent a supplied API key from being sent to an arbitrary URL.
@@ -217,7 +216,6 @@ async def config_for_user(base: AppConfig, client_id: str) -> tuple[AppConfig, b
     for tier in config.tiers.values():
         tier.models = []
     cipher = _cipher() if rows else None
-    overrides = await file_capabilities.user_overrides(client_id) if rows and file_capabilities.enabled() else {}
     for row in rows:
         try:
             key = cipher.decrypt(row["encrypted_api_key"].encode()).decode()
@@ -231,6 +229,5 @@ async def config_for_user(base: AppConfig, client_id: str) -> tuple[AppConfig, b
             max_tokens=row["max_tokens"],
             supports_function_calling=row["provider"] != "anthropic",
             supports_json_mode=row["provider"] != "anthropic",
-            file_capabilities=overrides.get(row["connection_id"]),
         ))
     return config, bool(rows)

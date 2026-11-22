@@ -12,7 +12,6 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from optiroute.file_capabilities import Capabilities
 
 # Load environment variables from .env file (if present)
 load_dotenv()
@@ -34,7 +33,6 @@ class ModelConfig(BaseModel):
     max_tokens: int = 8192
     supports_function_calling: bool = False
     supports_json_mode: bool = False
-    file_capabilities: Capabilities | None = Field(default=None, exclude=True)
 
     def resolve_api_key(self) -> str:
         """Read the API key from the environment variable named in api_key_env."""

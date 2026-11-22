@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
     define: {
       __FEATURE_FILE_UPLOAD__: JSON.stringify(uploadEnabled),
       __OPTIROUTE_PROXY_API__: JSON.stringify(proxyApi),
+      __OPTIROUTE_PREVIEW__: JSON.stringify(uploadPreview),
     },
   }
 })

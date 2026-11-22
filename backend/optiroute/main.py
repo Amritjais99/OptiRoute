@@ -92,8 +92,6 @@ async def lifespan(app: FastAPI):
 
     # Phase 3: initialise SQLite tables and seed data
     await init_db()
-    if file_capabilities.enabled():
-        await file_capabilities.init_file_capabilities()
     logger.info("Database initialised (%s).", "Turso" if os.environ.get("TURSO_DATABASE_URL") else "SQLite")
 
     yield
@@ -274,14 +272,7 @@ if file_capabilities.enabled():
 
     @app.get("/api/v1/file-capabilities")
     async def get_file_capabilities(current_user: dict = Depends(get_current_user)):
-        return {key: value.model_dump() for key, value in
-                (await file_capabilities.user_overrides(current_user["client_id"])).items()}
-
-    @app.put("/api/v1/file-capabilities/{connection_id}")
-    async def save_file_capabilities(connection_id: str, settings: file_capabilities.Capabilities,
-                                     current_user: dict = Depends(get_current_user)):
-        await file_capabilities.update_override(current_user["client_id"], connection_id, settings)
-        return settings
+        return {key: file_capabilities.SETTINGS[key] for key in ("models", "defaultContextTokens")}
 
 
 @app.post("/v1/chat/completions/{request_id}/cancel")
@@ -346,6 +337,7 @@ async def _run_chat_completion(
     conversation_id = request.conversation_id or str(_uuid.uuid4())
     previous_turns = []
     retry_tier = None
+    retry_tiers = None
     parent_chat_id = None
     if request.conversation_id:
         if len(request.messages) != 1 or request.messages[0].role != "user":
@@ -399,7 +391,19 @@ async def _run_chat_completion(
             retry_tier = config.next_tier(source["tier_used"])
             if not retry_tier:
                 raise HTTPException(status_code=409, detail="This response is already from the heaviest tier available.")
-            if not config.tiers[retry_tier].models:
+            retry_tiers = {retry_tier}
+            if uploads:
+                order = config.tier_order
+                stronger = order[order.index(retry_tier):]
+                retry_tiers = set(stronger)
+                for name, tier in config.tiers.items():
+                    if name not in retry_tiers:
+                        tier.models = []
+                first_connected = next((name for name in stronger if config.tiers[name].models), None)
+                if not first_connected:
+                    raise HTTPException(status_code=409, detail="Connect a model in a higher tier to retry this attachment.")
+                retry_tier = first_connected
+            elif not config.tiers[retry_tier].models:
                 raise HTTPException(status_code=409, detail=f"Connect a {retry_tier} tier model to retry this answer.")
             # Regenerate the same turn with the context it originally had.
             # The answer the user rejected must not guide the new model.
@@ -446,14 +450,13 @@ async def _run_chat_completion(
     attachment_processing_ms = None
     if uploads:
         progress("Reading your attachments...")
-        models = [model for name, tier in config.tiers.items() if not retry_tier or name == retry_tier
-                  for model in tier.models]
+        models = [model for tier in config.tiers.values() for model in tier.models]
         processing = asyncio.create_task(asyncio.to_thread(prepare_files, uploads, models))
         processing_started = time.monotonic()
         try:
             prepared_files = await asyncio.shield(processing)
             attachment_processing_ms = round((time.monotonic() - processing_started) * 1000)
-            file_tokens = await asyncio.to_thread(fit_models, config, request, prepared_files, retry_tier)
+            file_tokens = await asyncio.to_thread(fit_models, config, request, prepared_files)
         except asyncio.CancelledError:
             # Wait for the worker to release its files before admitting another upload.
             await asyncio.gather(processing, return_exceptions=True)
@@ -477,8 +480,8 @@ async def _run_chat_completion(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if retry_tier and planned_decision.selected_tier != retry_tier:
-        raise HTTPException(status_code=409, detail=f"No {retry_tier} tier model can handle this prompt.")
+    if retry_tiers and planned_decision.selected_tier not in retry_tiers:
+        raise HTTPException(status_code=409, detail="No model in the requested higher tiers can handle this prompt.")
 
     request_lock = cache_mgr.request_lock(request, current_user["uid"])
     progress("Routing to a heavier model..." if retry_tier else "Checking for a cached answer...")
@@ -530,8 +533,8 @@ async def _run_chat_completion(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-            if retry_tier and planned_decision.selected_tier != retry_tier:
-                raise HTTPException(status_code=409, detail=f"No available {retry_tier} tier model can handle this prompt.")
+            if retry_tiers and planned_decision.selected_tier not in retry_tiers:
+                raise HTTPException(status_code=409, detail="No available model in the requested higher tiers can handle this prompt.")
     
             target_tier = None
             quality_retries = 0
@@ -570,7 +573,7 @@ async def _run_chat_completion(
                         try:
                             next_model, fallback_decision = router.get_fallback_model(
                                 model_config, decision.selected_tier, request, attempted_models,
-                                allowed_tiers={retry_tier} if retry_tier else None,
+                                allowed_tiers=retry_tiers,
                             )
                         except ValueError as exc:
                             raise HTTPException(status_code=503, detail="No healthy connected model can handle this prompt.") from exc
@@ -621,7 +624,10 @@ async def _run_chat_completion(
                                 logger.error("Attachment provider call failed (%s)", type(exc).__name__)
                             else:
                                 logger.error("Provider call failed (%s): %s", type(exc).__name__, exc)
-                            if isinstance(exc, TimeoutError):
+                            rate_limited = isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+                            if rate_limited and prepared_files:
+                                note_error(f"{_progress_model_name(model_config.id)} reached its provider's rate or quota limit.")
+                            elif isinstance(exc, TimeoutError):
                                 note_error(f"{_progress_model_name(model_config.id)} exceeded its 90-second time budget.")
                             elif prepared_files:
                                 note_error("The provider could not process the attachment request.")
@@ -637,12 +643,18 @@ async def _run_chat_completion(
                             try:
                                 next_model, fallback_decision = router.get_fallback_model(
                                     model_config, decision.selected_tier, request, attempted_models,
-                                    allowed_tiers={retry_tier} if retry_tier else None,
+                                    allowed_tiers=retry_tiers,
                                 )
                             except ValueError:
                                 if prepared_files:
                                     if isinstance(exc, UploadError):
                                         raise HTTPException(exc.status, exc.detail) from None
+                                    if rate_limited:
+                                        raise HTTPException(429, detail={
+                                            "code": "provider_rate_limit",
+                                            "message": "The remaining model reached its provider's rate or quota limit. "
+                                                       "Check the provider quota, wait and retry, or connect another eligible model.",
+                                        }) from None
                                     raise HTTPException(502, detail={
                                         "code": "provider_file_rejected",
                                         "message": "The selected provider could not process the attachment request. "
@@ -650,11 +662,13 @@ async def _run_chat_completion(
                                     }) from None
                                 detail = f"All eligible connected models failed. Last attempt with {_progress_model_name(model_config.id)}: {_provider_failure_detail(exc)}"
                                 raise HTTPException(status_code=502, detail=detail) from exc
-                            if incomplete and request.max_tokens is None:
+                            if incomplete and request.max_tokens is None and not prepared_files:
                                 expanded_output = True
                             failure_note = (f"{_progress_model_name(model_config.id)} could not finish its answer (token limit). Trying {_progress_model_name(next_model.id)}..."
                                             if incomplete else f"{_progress_model_name(model_config.id)} timed out. Trying {_progress_model_name(next_model.id)}..."
                                             if isinstance(exc, TimeoutError) else f"{_progress_model_name(model_config.id)} failed. Trying {_progress_model_name(next_model.id)}...")
+                            if rate_limited and prepared_files:
+                                failure_note = f"{_progress_model_name(model_config.id)} reached its provider limit. Trying {_progress_model_name(next_model.id)}..."
                             logger.warning("Model %s failed. Trying %s.", model_config.id, next_model.id)
                     progress(failure_note)
                     decision.failover_from_model = model_config.id
@@ -674,8 +688,8 @@ async def _run_chat_completion(
                     # NO/VALID -> step 8b
                     break
                 if retry_tier:
-                    # A manual retry targets exactly one tier. Return this as
-                    # best effort without replacing the previously cached answer.
+                    # Keep the previous cached answer when manual retry returns
+                    # a best-effort response.
                     logger.info("Manual heavier answer appears incomplete; leaving cache unchanged.")
                     break
                     
@@ -696,8 +710,8 @@ async def _run_chat_completion(
     
             # 8b. Save to Semantic Cache
             ensure_not_cancelled()
-            if retry_tier and (decision.cache_hit or decision.selected_tier != retry_tier):
-                raise HTTPException(status_code=502, detail="The heavier retry did not produce a fresh answer from the requested tier.")
+            if retry_tiers and (decision.cache_hit or decision.selected_tier not in retry_tiers):
+                raise HTTPException(status_code=502, detail="The heavier retry did not produce a fresh answer from an eligible higher tier.")
             chat_id = str(_uuid.uuid4())
             if prepared_files:
                 warnings = (await asyncio.to_thread(plan_for, model_config, request, prepared_files)).warnings
@@ -717,8 +731,8 @@ async def _run_chat_completion(
             decision.cost_usd = cost
             decision.latency_ms = round(latency_ms, 2)
     
-    if retry_tier and (decision.cache_hit or decision.selected_tier != retry_tier):
-        raise HTTPException(status_code=502, detail="The heavier retry did not produce a fresh answer from the requested tier.")
+    if retry_tiers and (decision.cache_hit or decision.selected_tier not in retry_tiers):
+        raise HTTPException(status_code=502, detail="The heavier retry did not produce a fresh answer from an eligible higher tier.")
 
     # Record spend against the tier that ultimately served this turn.
     decision.workflow_id = await db.ensure_tier_workflow(current_user["client_id"], decision.selected_tier)

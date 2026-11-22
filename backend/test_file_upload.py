@@ -86,6 +86,8 @@ class UploadFlow(unittest.TestCase):
         self.provider_payloads = []
         self.provider = "groq"
         self.model_id = "openai/gpt-oss-120b"
+        self.higher_models = {}
+        self.rate_limited_model = None
         self.native_response = False
         self.enterContext(patch("optiroute.main.available_model_ids", return_value=None))
         self.enterContext(patch("optiroute.main.config_for_user", side_effect=self.config))
@@ -97,14 +99,15 @@ class UploadFlow(unittest.TestCase):
         config = get_config().model_copy(deep=True)
         for tier in config.tiers.values():
             tier.models = []
-        config.tiers["light"].models.append(ModelConfig(
-            id=self.model_id, provider=self.provider, api_base="https://example.invalid/v1",
-            api_key="test-only", cost_per_1k_input=0, cost_per_1k_output=0,
-        ))
         connection = await database.get_connection()
         try:
-            await connection.execute("INSERT OR IGNORE INTO ai_models(model_id, provider_name) VALUES (?, ?)",
-                                     (self.model_id, self.provider))
+            for tier, model_id in {"light": self.model_id, **self.higher_models}.items():
+                config.tiers[tier].models.append(ModelConfig(
+                    id=model_id, provider=self.provider, api_base="https://example.invalid/v1",
+                    api_key="test-only", cost_per_1k_input=0, cost_per_1k_output=0,
+                ))
+                await connection.execute("INSERT OR IGNORE INTO ai_models(model_id, provider_name) VALUES (?, ?)",
+                                         (model_id, self.provider))
             await connection.commit()
         finally:
             await connection.close()
@@ -112,6 +115,8 @@ class UploadFlow(unittest.TestCase):
 
     async def provider_reply(self, _client, url, payload, _headers, model_id, _retry):
         self.provider_payloads.append(payload)
+        if model_id == self.rate_limited_model:
+            httpx.Response(429, request=httpx.Request("POST", url)).raise_for_status()
         if self.native_response:
             return httpx.Response(200, json={
                 "id": "gemini-test", "status": "completed", "steps": [
@@ -223,6 +228,36 @@ class UploadFlow(unittest.TestCase):
         self.assertEqual(plain.status_code, 200, plain.text)
         self.assertFalse(plain.json()["optiroute"]["cache_hit"])
         self.assertEqual(len(self.provider_payloads), 3)
+
+    def test_capabilities_follow_registry_and_cannot_be_edited(self):
+        response = self.client.get("/api/v1/file-capabilities")
+        self.assertEqual(response.status_code, 200)
+        registry = response.json()["models"]
+        self.assertEqual(registry["groq/openai/gpt-oss-120b"]["maxContextTokens"], 131072)
+        self.assertNotIn("image", registry["groq/openai/gpt-oss-120b"])
+        self.assertTrue(registry["groq/qwen/qwen3.8-27b"]["image"])
+        override = self.client.put("/api/v1/file-capabilities/example", json={"maxContextTokens": 2000000})
+        self.assertEqual(override.status_code, 404)
+
+    def test_attachment_retry_escalates_after_medium_rate_limit(self):
+        self.model_id = "openai/gpt-oss-20b"
+        self.higher_models = {"mid": "qwen/qwen3.8-27b", "heavy": "openai/gpt-oss-120b"}
+        self.rate_limited_model = self.higher_models["mid"]
+        fixture = b"Test label: PINEAPPLE GARDEN"
+        initial = self.send("label.txt", fixture, "text/plain")
+        self.assertEqual(initial["status"], "completed", initial)
+        original = initial["result"]["optiroute"]
+        self.assertEqual(original["tier"], "light")
+        result = self.send("label.txt", fixture, "text/plain",
+                           conversation_id=original["conversation_id"], retry_from_chat_id=original["chat_id"])
+        self.assertEqual(result["status"], "completed", result)
+        info = result["result"]["optiroute"]
+        self.assertEqual(info["tier"], "heavy")
+        self.assertTrue(info["manual_escalation"])
+        self.assertFalse(info["cache_hit"])
+        self.assertEqual(info["retry_from_chat_id"], original["chat_id"])
+        self.assertEqual([payload["model"] for payload in self.provider_payloads],
+                         [self.model_id, self.higher_models["mid"], self.higher_models["heavy"]])
 
     @unittest.skipUnless(FLAG == "false", "Run separately with TEST_UPLOAD_FLAG_OFF=true")
     def test_disabled_routes_and_text_cache(self):

@@ -349,7 +349,7 @@ def _extract_plain(upload: Upload) -> str:
 
 
 def prepare_files(uploads: list[Upload], models) -> list[PreparedFile]:
-    settings = [model.file_capabilities or capabilities_for(model.provider, model.id) for model in models]
+    settings = [capabilities_for(model.provider, model.id) for model in models]
     providers = [model.provider for model in models]
     deadline = time.monotonic() + 45
     result = []
@@ -400,7 +400,7 @@ class AttachmentPlan:
 
 def plan_for(model, request, files: list[PreparedFile], *, payload: bool = False,
              attachment_index: int | None = None) -> AttachmentPlan:
-    capability = model.file_capabilities or capabilities_for(model.provider, model.id)
+    capability = capabilities_for(model.provider, model.id)
     messages = [ChatMessage(role="system", content=FILE_SYSTEM_MESSAGE), *request.messages]
     user_index = (attachment_index if attachment_index is not None else len(request.messages) - 1) + 1
     blocks, native_files, warnings, counts = [], [], [], []
@@ -412,7 +412,8 @@ def plan_for(model, request, files: list[PreparedFile], *, payload: bool = False
                   or file.upload.name.lower().endswith(".docx") and capability.docx and model.provider == "gemini")
         if native:
             native_files.append(file)
-            counts.append({"name": file.upload.name, "tokens": file.native_tokens})
+            tokens = (capability.imageTokens if image else None) or file.native_tokens
+            counts.append({"name": file.upload.name, "tokens": tokens})
         else:
             if not file.text:
                 raise UploadError(file.extraction_error, "no_readable_text")
@@ -455,13 +456,11 @@ def plan_for(model, request, files: list[PreparedFile], *, payload: bool = False
                           content if native_files else [], warnings, file_tokens)
 
 
-def fit_models(config, request, files: list[PreparedFile], retry_tier: str | None):
+def fit_models(config, request, files: list[PreparedFile]):
     errors = []
     matched = False
     workload_tokens = 0
-    for tier_name, tier in config.tiers.items():
-        if retry_tier and tier_name != retry_tier:
-            continue
+    for tier in config.tiers.values():
         fitting = []
         for model in tier.models:
             try:
