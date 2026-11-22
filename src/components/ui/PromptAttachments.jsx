@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { extension, uploadSettings } from '../../utils/fileUpload';
+import { extension, formatFileBytes, sizeLimitError, totalFileBytes, uploadSettings } from '../../utils/fileUpload';
 
 export function AttachmentPicker({ attachments, setAttachments, notify, disabled }) {
   const input = useRef(null);
@@ -8,6 +8,11 @@ export function AttachmentPicker({ attachments, setAttachments, notify, disabled
     const selected = Array.from(event.target.files || []);
     event.target.value = '';
     if (!selected.length) return;
+    const sizeError = sizeLimitError([...attachments.map(item => item.file), ...selected]);
+    if (sizeError) {
+      notify(sizeError);
+      return;
+    }
     if (selected.length + attachments.length > uploadSettings.maxFiles) {
       notify(`Attach up to ${uploadSettings.maxFiles} files. Remove a file or choose fewer files.`);
       return;
@@ -17,9 +22,9 @@ export function AttachmentPicker({ attachments, setAttachments, notify, disabled
       notify(`${invalid.name} is unsupported. Use PNG, JPEG, WebP, PDF, DOCX, TXT, MD, or CSV.`);
       return;
     }
-    const tooLarge = selected.find(file => !file.size || file.size > uploadSettings.maxFileBytes);
-    if (tooLarge) {
-      notify(`${tooLarge.name} is empty or larger than ${uploadSettings.maxFileBytes / 1_000_000} MB. Choose a smaller, nonempty file.`);
+    const empty = selected.find(file => !file.size);
+    if (empty) {
+      notify(`${empty.name} is empty. Choose a nonempty file.`);
       return;
     }
     notify(null);
@@ -42,8 +47,12 @@ export function AttachmentPicker({ attachments, setAttachments, notify, disabled
 export function AttachmentChips({ attachments, setAttachments, disabled }) {
   if (!attachments.length) return null;
   return (
-    <ul aria-label="Attached files" className="mx-auto mb-2 flex w-full max-w-[820px] flex-wrap gap-2 font-radio-canada text-sm">
-      {attachments.map(({ id, file, pages }) => (
+    <div className="mx-auto mb-2 w-full max-w-[820px] font-radio-canada text-sm">
+      <p role="status" className="mb-2 text-[#315575]">
+        {formatFileBytes(totalFileBytes(attachments.map(item => item.file)))} / {uploadSettings.maxCombinedBytes / 1048576} MB total
+      </p>
+      <ul aria-label="Attached files" className="flex flex-wrap gap-2">
+        {attachments.map(({ id, file, pages }) => (
         <li key={id} className="flex min-w-0 max-w-full flex-wrap items-center gap-2 rounded-xl border border-white/70 bg-white px-3 py-2 text-[#315575]">
           <span title={file.name} className="min-w-0 max-w-48 truncate">{file.name}</span>
           {extension(file.name) === 'pdf' && (
@@ -57,7 +66,8 @@ export function AttachmentChips({ attachments, setAttachments, disabled }) {
             onClick={() => setAttachments(current => current.filter(item => item.id !== id))}
             className="h-7 w-7 rounded-md text-lg hover:bg-[#edf2f7] disabled:opacity-40">×</button>
         </li>
-      ))}
-    </ul>
+        ))}
+      </ul>
+    </div>
   );
 }

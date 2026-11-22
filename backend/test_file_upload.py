@@ -190,6 +190,26 @@ class UploadFlow(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "type_mismatch")
         self.assertFalse(self.provider_payloads)
 
+    def test_combined_upload_cap_includes_every_file(self):
+        fixture = sample_pdf()
+        # A PDF comment adds bytes without changing page text or the token count.
+        prefix, ending = fixture.rsplit(b"%%EOF", 1)
+
+        def padded_pdf(size):
+            padding = size - len(fixture) - 2
+            return prefix + b"%" + b"x" * padding + b"\n%%EOF" + ending
+
+        accepted = self.send("large.pdf", padded_pdf(4_089_446), "application/pdf")
+        self.assertEqual(accepted["status"], "completed", accepted)
+        request = {"request_id": str(uuid.uuid4()), "messages": [{"role": "user", "content": "Read this."}]}
+        result = self.client.post(API + "/attachment-jobs",
+                                  data={"request": json.dumps(request), "pages": '["",""]'},
+                                  files=[("files", ("one.pdf", padded_pdf(2_000_000), "application/pdf")),
+                                         ("files", ("two.pdf", padded_pdf(2_300_000), "application/pdf"))])
+        self.assertEqual(result.status_code, 413, result.text)
+        self.assertEqual(result.json()["detail"], SETTINGS["sizeLimitMessage"])
+        self.assertEqual(len(self.provider_payloads), 1)
+
     def test_file_cache_isolates_bytes_and_plain_prompt(self):
         first = self.send("label.txt", b"First local test label", "text/plain")
         second = self.send("label.txt", b"Different local test label", "text/plain")

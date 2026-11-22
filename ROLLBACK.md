@@ -8,7 +8,7 @@ The baseline tag is `pre-file-upload-20261122` at
 
 1. Set `FEATURE_FILE_UPLOAD=false` in the Render service environment and redeploy the backend. This removes the multipart jobs and capability routes.
 2. Set `FEATURE_FILE_UPLOAD=false` in the Vercel project's corresponding environment and redeploy the frontend. Vite reads this flag when it builds the site, so changing the variable alone does not remove the picker.
-3. For the standalone Docker preview, set the flag to `false` and select **Save, rebuild, and deploy**. Both layers use this service's environment.
+3. For the isolated preview, turn off the flag on its Render service and set the Vercel Preview flag to `false` scoped to `feature/file-upload`. Redeploy both.
 4. Verify that the prompt composer has no attachment button, the attachment jobs route is unavailable, and existing text chat works.
 
 ## Revert the feature after an approved squash merge
@@ -48,9 +48,9 @@ COMMIT;
 
 If a later turn refers to an archived attachment answer, forked chat history may be incomplete on the older version. Use the feature flag when preserving accessible conversations is a priority. Restore archived data only with an attachment-aware version running and after checking for conflicts with newer records.
 
-## Standalone Render preview
+## Isolated Render and Vercel preview
 
-Use a separate **Free** web service linked to the `feature/file-upload` branch. Set the runtime to Docker, the Dockerfile path to `./Dockerfile.file-upload-preview`, and the health check to `/health`. The image builds the frontend and hosts it with the preview API from one HTTPS origin.
+Use a separate **Free** web service linked to the `feature/file-upload` branch. Set the runtime to Docker, the Dockerfile path to `./Dockerfile.file-upload-preview`, and the health check to `/health`. Vercel hosts the frontend and rewrites its normal API calls under `/optiroute-api` to this separate Render service.
 
 Set these variables on the preview service only:
 
@@ -58,17 +58,16 @@ Set these variables on the preview service only:
 |---|---|
 | `FEATURE_FILE_UPLOAD` | `true`; rebuild with `false` for the disabled test |
 | `FIREBASE_PROJECT_ID` | The preview Firebase project ID |
-| `VITE_FIREBASE_PROJECT_ID` | Same preview Firebase project ID |
-| `VITE_FIREBASE_API_KEY` | Public web app API key |
-| `VITE_FIREBASE_AUTH_DOMAIN` | Public web app auth domain |
-| `VITE_FIREBASE_APP_ID` | Public web app ID |
+| `CORS_ORIGINS` | Exact Vercel branch alias from `vercel.json` |
 | `WORKFLOW_ENCRYPTION_KEY` | A new preview-only Fernet key. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` and enter it directly in Render. |
 
-Use Firebase email/password for test sign-in. Google popups also require the preview host to be listed as an authorized domain. Keep the preview isolated by leaving `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` unset. The preview uses local SQLite and can lose test chat history and model settings after a restart. Use synthetic attachments and test credentials from the model providers.
+Vercel enables uploads for this branch's Preview build when `FEATURE_FILE_UPLOAD` is unset, using `VERCEL_ENV` and `VERCEL_GIT_COMMIT_REF`. An explicit `false` overrides it. Production and local builds default to off. Set the Firebase public web variables on Vercel if they are missing in Preview. Use the exact branch alias listed in `vercel.json`.
 
-The browser sends multipart requests directly to the Render backend. Vercel's default Function request limit is 4.5 MB, below both the 10 MB per-file limit and the roughly 30 MB maximum multipart body. If a hosting proxy cannot accept the largest requests, a direct signed upload to private object storage with short expiration and immediate cleanup is an alternative. This branch does not provision storage.
+Use Firebase email/password for test sign-in. Google popups also require the preview host to be an authorized Firebase domain. Keep `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` unset. The preview uses local SQLite and can lose test chat history and model settings after a restart. Use synthetic attachments and preview-only provider keys.
 
-Production, if separately approved, needs the backend runtime to install `backend/requirements-file-upload.txt`, install Tesseract and its English language data, and prefetch the `o200k_base` tokenizer into `TIKTOKEN_CACHE_DIR`. The preview Docker image supplies these. The existing production Python start command does not install them.
+The client and Render count combined file bytes. The limit is 4 MB (4,194,304 bytes) shared by up to three files, with a separate allowance for bounded multipart framing. A PDF range reduces processing but does not shrink the bytes sent by the browser. Export that range to a smaller PDF to reduce the upload size.
+
+Production, if separately approved, needs the backend runtime to install `backend/requirements-file-upload.txt`, install Tesseract and its English language data, and prefetch the `o200k_base` tokenizer into `TIKTOKEN_CACHE_DIR`. The preview Docker image supplies these. Before enabling production uploads, add host-specific rewrites to the production backend and verify them. The preview rewrites apply only to the preview alias.
 
 ## Test commands and limits
 

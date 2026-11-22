@@ -1,8 +1,23 @@
-import settings from '../../backend/optiroute/file_upload_config.json';
+import settings from '../../backend/optiroute/file_upload_config.json' with { type: 'json' };
 
 /* global __FEATURE_FILE_UPLOAD__ */
-export const FILE_UPLOAD = __FEATURE_FILE_UPLOAD__;
+export const FILE_UPLOAD = typeof __FEATURE_FILE_UPLOAD__ !== 'undefined' && __FEATURE_FILE_UPLOAD__;
 export const uploadSettings = settings;
+
+export function totalFileBytes(files) {
+  return files.reduce((bytes, file) => bytes + file.size, 0);
+}
+
+export function formatFileBytes(bytes) {
+  return `${(bytes / 1048576).toFixed(2)} MB`;
+}
+
+export function sizeLimitError(files) {
+  const bytes = totalFileBytes(files);
+  return bytes > settings.maxCombinedBytes
+    ? `Total selected: ${formatFileBytes(bytes)} (${bytes.toLocaleString('en-US')} bytes). ${settings.sizeLimitMessage}`
+    : null;
+}
 
 export function extension(name) {
   const dot = name.lastIndexOf('.');

@@ -1,6 +1,8 @@
 {
   "maxFiles": 3,
-  "maxFileBytes": 10000000,
+  "maxCombinedBytes": 4194304,
+  "multipartOverheadBytes": 131072,
+  "sizeLimitMessage": "Attachments exceed the 4 MB combined limit. Compress images, split the PDF, save a smaller PDF of the pages you need, or attach fewer files.",
   "outputReserve": 0.2,
   "defaultContextTokens": 8192,
   "maxPdfPages": 100,

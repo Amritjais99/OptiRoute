@@ -443,13 +443,16 @@ async def _run_chat_completion(
     context_hash = cache_mgr._context_hash(request)
     prepared_files = None
     warnings = []
+    attachment_processing_ms = None
     if uploads:
         progress("Reading your attachments...")
         models = [model for name, tier in config.tiers.items() if not retry_tier or name == retry_tier
                   for model in tier.models]
         processing = asyncio.create_task(asyncio.to_thread(prepare_files, uploads, models))
+        processing_started = time.monotonic()
         try:
             prepared_files = await asyncio.shield(processing)
+            attachment_processing_ms = round((time.monotonic() - processing_started) * 1000)
             file_tokens = await asyncio.to_thread(fit_models, config, request, prepared_files, retry_tier)
         except asyncio.CancelledError:
             # Wait for the worker to release its files before admitting another upload.
@@ -743,6 +746,7 @@ async def _run_chat_completion(
     if prepared_files:
         response.optiroute["attachment_digest"] = request._attachment_digest
         response.optiroute["attachment_warnings"] = warnings
+        response.optiroute["attachment_processing_ms"] = attachment_processing_ms
     if not quality_ok:
         response.optiroute["quality_warning"] = "This answer may be incomplete and was not saved to cache."
     if retry_tier:

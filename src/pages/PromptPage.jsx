@@ -5,7 +5,7 @@ import { auth } from '../utils/firebase';
 import { getAuthHeaders, API_BASE } from '../utils/auth';
 import MarkdownRenderer from '../components/ui/MarkdownRenderer';
 import { AttachmentPicker, AttachmentChips } from '../components/ui/PromptAttachments';
-import { FILE_UPLOAD, errorMessage, extension, uploadBody } from '../utils/fileUpload';
+import { FILE_UPLOAD, errorMessage, extension, sizeLimitError, uploadBody } from '../utils/fileUpload';
 
 const orderConversationTurns = (turns) => {
   const chronological = turns
@@ -303,6 +303,11 @@ const PromptPage = () => {
     const submittedPrompt = retryTurn ? retryTurn.prompt : prompt.trim();
     const retryWithFile = Boolean(retryTurn?.response?.optiroute?.attachment_digest);
     const chosenFiles = FILE_UPLOAD && (!retryTurn || retryWithFile) ? attachments : [];
+    const sizeError = sizeLimitError(chosenFiles.map(item => item.file));
+    if (sizeError) {
+      setError(sizeError);
+      return;
+    }
     if (retryWithFile && !chosenFiles.length) {
       setRetryError({ chatId: retryTurn.chat_id, message: 'Reattach the original files and use the same PDF page ranges, then retry.' });
       return;
