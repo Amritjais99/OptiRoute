@@ -4,7 +4,7 @@ import { signOut } from 'firebase/auth';
 import { auth } from '../utils/firebase';
 import { getAuthHeaders, API_BASE } from '../utils/auth';
 import MarkdownRenderer from '../components/ui/MarkdownRenderer';
-import { AttachmentPicker, AttachmentChips } from '../components/ui/PromptAttachments';
+import { AttachmentPicker, AttachmentChips, SavedAttachments } from '../components/ui/PromptAttachments';
 import { FILE_UPLOAD, errorMessage, extension, sizeLimitError, uploadBody } from '../utils/fileUpload';
 
 const orderConversationTurns = (turns) => {
@@ -301,14 +301,15 @@ const PromptPage = () => {
 
   const handleSubmit = async (retryTurn = null) => {
     const submittedPrompt = retryTurn ? retryTurn.prompt : prompt.trim();
-    const retryWithFile = Boolean(retryTurn?.response?.optiroute?.attachment_digest);
-    const chosenFiles = FILE_UPLOAD && (!retryTurn || retryWithFile) ? attachments : [];
+    const retryMetadata = retryTurn?.response?.optiroute;
+    const needsFiles = Boolean(retryMetadata?.attachment_digest && !retryMetadata?.attachment_source_chat_id);
+    const chosenFiles = FILE_UPLOAD && (!retryTurn || needsFiles) ? attachments : [];
     const sizeError = sizeLimitError(chosenFiles.map(item => item.file));
     if (sizeError) {
       setError(sizeError);
       return;
     }
-    if (retryWithFile && !chosenFiles.length) {
+    if (needsFiles && !chosenFiles.length) {
       setRetryError({ chatId: retryTurn.chat_id, message: 'Reattach the original files and use the same PDF page ranges, then retry.' });
       return;
     }
@@ -505,6 +506,12 @@ const PromptPage = () => {
         </div>
       )}
       {FILE_UPLOAD && <AttachmentChips attachments={attachments} setAttachments={setAttachments} disabled={loading} />}
+      {FILE_UPLOAD && isFollowUp && !attachments.length &&
+        turns.find(turn => turn.chat_id === activeParentId)?.response?.optiroute?.attachment_source_chat_id && (
+        <p className="mx-auto mb-2 w-full max-w-[820px] font-radio-canada text-sm text-[#315575]">
+          This reply will use the saved attachments from this chat.
+        </p>
+      )}
       <form
         className="mx-auto flex w-full max-w-[820px] items-end gap-3 rounded-[20px] border border-white/70 bg-white px-4 py-2 shadow-lg focus-within:ring-2 focus-within:ring-[#788FA8]/40"
         onSubmit={(event) => { event.preventDefault(); handleSubmit(); }}
@@ -697,6 +704,9 @@ const PromptPage = () => {
                 {!turn.response?.optiroute?.manual_escalation && (
                   <div className="self-end max-w-[95%] sm:max-w-[88%] bg-[#788FA8] text-black rounded-[16px] px-4 sm:px-5 py-3 font-radio-canada whitespace-pre-wrap break-words">
                     {turn.prompt}
+                    {turn.chat_id && turn.chat_id === turn.response?.optiroute?.attachment_source_chat_id && (
+                      <SavedAttachments chatId={turn.chat_id} files={turn.response.optiroute.attachment_files} />
+                    )}
                   </div>
                 )}
                 <div
@@ -724,6 +734,10 @@ const PromptPage = () => {
                       <p className="text-sm text-[#52677d]">A heavier model answer to this prompt appears below.</p>
                     </div>
                   ) : null}
+                  {turn.response?.optiroute?.manual_escalation && turn.chat_id &&
+                    turn.chat_id === turn.response.optiroute.attachment_source_chat_id && (
+                    <SavedAttachments chatId={turn.chat_id} files={turn.response.optiroute.attachment_files} />
+                  )}
                   {turn.response?.choices?.[0]?.message?.content ? (
                     <MarkdownRenderer>{turn.response.choices[0].message.content}</MarkdownRenderer>
                   ) : (

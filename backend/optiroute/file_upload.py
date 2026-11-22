@@ -208,6 +208,36 @@ def upload_digest(uploads: list[Upload]) -> str:
     return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
 
 
+def encrypt_uploads(uploads: list[Upload]) -> list[tuple[int, int, str]]:
+    from optiroute.connections import _cipher
+
+    cipher = _cipher()
+    parts = []
+    chunk_size = 512 * 1024
+    for file_index, upload in enumerate(uploads):
+        encrypted = cipher.encrypt(upload.content).decode("ascii")
+        for part_index, offset in enumerate(range(0, len(encrypted), chunk_size)):
+            parts.append((file_index, part_index, encrypted[offset:offset + chunk_size]))
+    return parts
+
+
+async def load_saved_upload(
+    source_chat_id: str, client_id: str, conversation_id: str, file_index: int, file: dict,
+) -> Upload:
+    from cryptography.fernet import InvalidToken
+    from optiroute.connections import _cipher
+    from optiroute.database import get_attachment_parts
+
+    parts = await get_attachment_parts(source_chat_id, client_id, conversation_id, file_index)
+    if not parts:
+        raise HTTPException(404, "This attachment is no longer available. Attach the original file again.")
+    try:
+        content = await asyncio.to_thread(_cipher().decrypt, "".join(parts).encode("ascii"))
+    except InvalidToken:
+        raise HTTPException(503, "This attachment could not be opened. Try again or attach the original file.") from None
+    return Upload(file["name"], file["mime"], content, file["pages"])
+
+
 def _ocr(image, deadline: float) -> tuple[str, bool]:
     image.thumbnail((2400, 2400))
     if image.mode not in ("RGB", "L"):

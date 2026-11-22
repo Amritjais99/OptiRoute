@@ -13,11 +13,12 @@ import time
 import httpx
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from optiroute.config import AppConfig, get_config, reload_config
 from optiroute.models import ChatCompletionRequest, ChatCompletionResponse, ChatMessage, RoutingDecision
@@ -219,9 +220,9 @@ def _start_job(request, authorization, current_user, uploads=None, on_done=None)
         except TimeoutError:
             inflight.fail(client_id, request_id, DEADLINE_MESSAGE)
         except HTTPException as exc:
-            inflight.fail(client_id, request_id, exc.detail if uploads else str(exc.detail))
+            inflight.fail(client_id, request_id, exc.detail if uploads or request._attachment_digest else str(exc.detail))
         except Exception as exc:
-            if uploads:
+            if uploads or request._attachment_digest:
                 logger.error("Attachment job %s failed (%s)", request_id, type(exc).__name__)
             else:
                 logger.exception("Chat job %s failed", request_id)
@@ -244,7 +245,7 @@ def _start_job(request, authorization, current_user, uploads=None, on_done=None)
 
 
 if file_capabilities.enabled():
-    from optiroute.file_upload import UploadGate, read_uploads
+    from optiroute.file_upload import UploadGate, load_saved_upload, read_uploads
 
     upload_gate = UploadGate()
 
@@ -273,6 +274,28 @@ if file_capabilities.enabled():
     @app.get("/api/v1/file-capabilities")
     async def get_file_capabilities(current_user: dict = Depends(get_current_user)):
         return {key: file_capabilities.SETTINGS[key] for key in ("models", "defaultContextTokens")}
+
+    @app.get("/api/v1/chats/{chat_id}/attachments/{file_index}")
+    async def download_attachment(chat_id: UUID, file_index: int, current_user: dict = Depends(get_current_user)):
+        from optiroute import database as db
+
+        client_id = current_user["client_id"]
+        chat = await db.get_chat_by_id(str(chat_id), client_id)
+        metadata = (json.loads(chat["response"]).get("optiroute") or {}) if chat else {}
+        source_chat_id = metadata.get("attachment_source_chat_id")
+        files = metadata.get("attachment_files") or []
+        if not source_chat_id or not 0 <= file_index < len(files):
+            raise HTTPException(404, "Attachment not found.")
+        upload = await load_saved_upload(source_chat_id, client_id, chat["conversation_id"], file_index, files[file_index])
+        return Response(
+            upload.content,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(upload.name, safe='')}",
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
 
 @app.post("/v1/chat/completions/{request_id}/cancel")
@@ -316,11 +339,30 @@ async def _run_chat_completion(
     if not user_message or user_message.role != "user" or not (user_message.content or "").strip():
         raise HTTPException(status_code=400, detail="A user prompt is required.")
     user_prompt = user_message.content.strip()
+    attachment_source_chat_id = None
     if uploads:
-        from optiroute.file_upload import UploadError, fit_models, plan_for, prepare_files, upload_digest
-        from optiroute.engine.workload import evaluate_workload
-
+        from optiroute.file_upload import upload_digest
         request._attachment_digest = upload_digest(uploads)
+
+    async def reuse_attachments(metadata):
+        from optiroute.file_upload import upload_digest
+
+        source_chat_id = metadata.get("attachment_source_chat_id")
+        if not source_chat_id or not file_capabilities.enabled():
+            return None, None
+        upload_gate.acquire(current_user["uid"])
+        asyncio.current_task().add_done_callback(upload_gate.release)
+        request._attachment_digest = metadata["attachment_digest"]
+        progress("Opening saved attachments...")
+        saved = []
+        for index, file in enumerate(metadata["attachment_files"]):
+            saved.append(await load_saved_upload(
+                source_chat_id, current_user["client_id"], conversation_id, index, file,
+            ))
+        if upload_digest(saved) != request._attachment_digest:
+            raise HTTPException(503, "Saved attachments could not be verified. Attach the originals again.")
+        return source_chat_id, saved
+
     progress_id = str(request.request_id) if request.request_id else None
 
     def progress(message: str) -> None:
@@ -349,6 +391,7 @@ async def _run_chat_completion(
             raise HTTPException(status_code=404, detail="Conversation not found.")
         turns_by_id = {turn["chat_id"]: turn for turn in previous_turns}
         parents_by_id = {}
+        metadata_by_id = {}
         superseded_answers = set()
         previous_id = None
         for turn in previous_turns:
@@ -356,6 +399,7 @@ async def _run_chat_completion(
                 turn_meta = json.loads(turn["response"]).get("optiroute", {}) or {}
             except (TypeError, ValueError, AttributeError):
                 turn_meta = {}
+            metadata_by_id[turn["chat_id"]] = turn_meta
             if "parent_chat_id" in turn_meta:
                 parent = turn_meta["parent_chat_id"]
             elif turn_meta.get("retry_from_chat_id"):
@@ -383,14 +427,18 @@ async def _run_chat_completion(
             source = turns_by_id.get(request.retry_from_chat_id)
             if not source or source["prompt"] != user_prompt:
                 raise HTTPException(status_code=400, detail="The selected answer was not found in this chat.")
-            original_digest = (json.loads(source["response"]).get("optiroute") or {}).get("attachment_digest", "")
-            if original_digest != request._attachment_digest:
-                raise HTTPException(status_code=409, detail="Reattach the original files with the same PDF page ranges to retry this answer.")
+            source_meta = metadata_by_id[source["chat_id"]]
             if source["chat_id"] in superseded_answers:
                 raise HTTPException(status_code=409, detail="This answer already has a heavier version. Retry that version instead.")
             retry_tier = config.next_tier(source["tier_used"])
             if not retry_tier:
                 raise HTTPException(status_code=409, detail="This response is already from the heaviest tier available.")
+            if not uploads and source_meta.get("attachment_source_chat_id") and file_capabilities.enabled():
+                attachment_source_chat_id, uploads = await reuse_attachments(source_meta)
+            if source_meta.get("attachment_digest", "") != request._attachment_digest:
+                raise HTTPException(status_code=409, detail="Reattach the original files with the same PDF page ranges to retry this answer.")
+            if uploads and source_meta.get("attachment_source_chat_id"):
+                attachment_source_chat_id = source_meta["attachment_source_chat_id"]
             retry_tiers = {retry_tier}
             if uploads:
                 order = config.tier_order
@@ -414,6 +462,12 @@ async def _run_chat_completion(
             if parent_chat_id not in turns_by_id:
                 raise HTTPException(status_code=400, detail="The selected answer was not found in this chat.")
             context_turns = context_path(parent_chat_id)
+            if not uploads and file_capabilities.enabled():
+                for turn in reversed(context_turns):
+                    metadata = metadata_by_id[turn["chat_id"]]
+                    if metadata.get("attachment_source_chat_id"):
+                        attachment_source_chat_id, uploads = await reuse_attachments(metadata)
+                        break
         context_messages = []
         for turn in context_turns[-12:]:
             context_messages.append(ChatMessage(role="user", content=turn["prompt"]))
@@ -449,6 +503,14 @@ async def _run_chat_completion(
     warnings = []
     attachment_processing_ms = None
     if uploads:
+        from optiroute.engine.workload import evaluate_workload
+        from optiroute.file_upload import UploadError, encrypt_uploads, fit_models, plan_for, prepare_files
+
+        attachment_files = [
+            {"name": file.name, "mime": file.mime, "size": len(file.content), "pages": file.pages}
+            for file in uploads
+        ]
+        attachment_parts = None if attachment_source_chat_id else await asyncio.to_thread(encrypt_uploads, uploads)
         progress("Reading your attachments...")
         models = [model for tier in config.tiers.values() for model in tier.models]
         processing = asyncio.create_task(asyncio.to_thread(prepare_files, uploads, models))
@@ -716,7 +778,7 @@ async def _run_chat_completion(
             if prepared_files:
                 warnings = (await asyncio.to_thread(plan_for, model_config, request, prepared_files)).warnings
                 response.optiroute = {"attachment_warnings": warnings}
-            if quality_ok:
+            if quality_ok and not prepared_files:
                 await cache_mgr.save_cache(
                     request,
                     response,
@@ -781,6 +843,9 @@ async def _run_chat_completion(
     if decision.cache_hit:
         chat_id = str(_uuid.uuid4())
     response.optiroute["chat_id"] = chat_id
+    if prepared_files:
+        response.optiroute["attachment_files"] = attachment_files
+        response.optiroute["attachment_source_chat_id"] = attachment_source_chat_id or chat_id
     # A successful turn is persisted before it is returned to the browser.
     title = (user_prompt[:57] + "...") if len(user_prompt) > 60 else user_prompt
     await db.save_chat(
@@ -797,8 +862,18 @@ async def _run_chat_completion(
         turn_index=len(previous_turns),
         context_hash=context_hash,
         request_id=progress_id,
+        attachment_parts=attachment_parts if prepared_files else None,
     )
 
+    ensure_not_cancelled()
+    if prepared_files and quality_ok and not decision.cache_hit:
+        try:
+            await cache_mgr.save_cache(
+                request, response, current_user["client_id"], current_user["uid"], progress_id,
+                replace_existing=bool(retry_tier), selected_chat_id=chat_id,
+            )
+        except Exception as exc:
+            logger.warning("Saved attachment answer %s could not be cached (%s)", chat_id, type(exc).__name__)
     ensure_not_cancelled()
 
     return JSONResponse(
@@ -936,10 +1011,18 @@ async def api_cache(current_user: dict = Depends(get_current_user)):
             continue
         response_id = resp_str.get("id") if isinstance(resp_str, dict) else None
         origin = (origin_by_chat_id.get(e.get("selected_chat_id")) or
-                  origin_by_request.get(e.get("request_id")) or
-                  origin_by_response.get((query, response_id)) or
-                  origin_by_context.get((query, e.get("context_hash") or "")) or
-                  origin_by_prompt.get(query))
+                  origin_by_request.get(e.get("request_id")))
+        is_file_entry = (e.get("context_hash") or "").startswith(file_capabilities.FILE_SCOPE_PREFIX)
+        if not is_file_entry:
+            origin = origin or origin_by_response.get((query, response_id))
+        origin = origin or origin_by_context.get((query, e.get("context_hash") or ""))
+        if not is_file_entry:
+            origin = origin or origin_by_prompt.get(query)
+        attachment_files = []
+        if origin and is_file_entry and file_capabilities.enabled():
+            metadata = json.loads(origin["response"]).get("optiroute") or {}
+            if metadata.get("attachment_source_chat_id"):
+                attachment_files = metadata.get("attachment_files") or []
         preview = str(resp_str)[:100]
         if isinstance(resp_str, dict) and resp_str.get("choices"):
             preview = (resp_str["choices"][0].get("message", {}).get("content") or "")[:100]
@@ -950,6 +1033,7 @@ async def api_cache(current_user: dict = Depends(get_current_user)):
             "response_preview": preview + "...",
             "conversation_id": origin["conversation_id"] if origin else None,
             "chat_id": origin["chat_id"] if origin else None,
+            "attachment_files": attachment_files,
             "hit_count": e.get("hit_count", 0),
             "saved_cost": 0.001,
             "time": e.get("created_at", "Just now"),

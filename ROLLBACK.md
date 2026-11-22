@@ -36,6 +36,9 @@ CREATE TABLE file_upload_rollback_chats AS
   SELECT * FROM chat_history WHERE context_hash LIKE 'files-v1:%';
 CREATE TABLE file_upload_rollback_cache AS
   SELECT * FROM semantic_cache WHERE context_hash LIKE 'files-v1:%';
+CREATE TABLE file_upload_rollback_attachment_parts AS
+  SELECT * FROM chat_attachment_parts
+  WHERE chat_id IN (SELECT chat_id FROM file_upload_rollback_chats);
 CREATE TABLE file_upload_rollback_cache_links AS
   SELECT log_id, cache_id FROM audit_logs
   WHERE cache_id IN (SELECT cache_id FROM file_upload_rollback_cache);
@@ -82,7 +85,7 @@ The preview and production URLs have separate Vercel rewrites. A session on the 
    The production entry point requires the Turso credentials and encryption key. It will fail startup rather than fall back to an empty local database. The image supplies OCR and the tokenizer. Verify the production logs report Turso, the original account has the same chats and model connections, and a normal text prompt succeeds with an existing saved key.
 4. Enable uploads on production Render first, then set the flag for the **Production** environment in Vercel and rebuild. Verify the existing account again and test an attachment through the production rewrite. Disable uploads using the steps at the top of this file if verification fails.
 
-The upload code uses the existing tables. It adds no production migration for capabilities and does not replace accounts, chats, model connections, or cache entries. SQLite data created on the preview is separate.
+Startup adds a table for encrypted attachment parts and preserves existing accounts, chats, model connections, and cache entries. The model capability registry is read from configuration. Preview SQLite data is separate.
 
 ## Test commands and limits
 
@@ -98,5 +101,6 @@ TEST_UPLOAD_FLAG_OFF=true python -m unittest -v test_file_upload.UploadFlow.test
 
 - Report token counts as estimates. Native image and PDF processing can vary by provider. Check each provider's own payload, context, and account limits in the hosted preview.
 - OCR uses English and is limited to 20 scanned pages per file. PDF page selections are limited to 100 pages. Low confidence and unreadable pages are reported. Image OCR extracts text and cannot describe a purely visual scene.
-- OptiRoute closes upload temp files and keeps extracted text in the running request only. Answers are still stored in chat history and eligible cache entries and can quote attached material. Provider retention follows the provider's own settings.
+- A successful attachment turn saves the encrypted original files with the chat in Turso. Cache entries link to the same owned chat and do not store another copy. Follow-ups and heavier retries can reopen the saved files. Deleting the chat removes its attachments through the database's foreign key. Keep the existing encryption key to retain access.
+- OptiRoute closes upload temp files and keeps extracted text in the running request only. Answers can quote attached material. Provider retention follows the provider's own settings.
 - The limiter allows four admitted requests per account per minute and one attachment job at a time per instance. It resets on restart.

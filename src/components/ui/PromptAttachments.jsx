@@ -1,5 +1,51 @@
-import { useRef } from 'react';
-import { extension, formatFileBytes, sizeLimitError, totalFileBytes, uploadSettings } from '../../utils/fileUpload';
+import { useRef, useState } from 'react';
+import { apiCall, API_BASE } from '../../utils/auth';
+import { extension, FILE_UPLOAD, formatFileBytes, sizeLimitError, totalFileBytes, uploadSettings } from '../../utils/fileUpload';
+
+export function SavedAttachments({ chatId, files }) {
+  const [downloading, setDownloading] = useState(null);
+  const [error, setError] = useState('');
+  if (!FILE_UPLOAD || !chatId || !files?.length) return null;
+
+  async function download(file, index) {
+    setError('');
+    setDownloading(index);
+    try {
+      const response = await apiCall(`${API_BASE}/api/v1/chats/${encodeURIComponent(chatId)}/attachments/${index}`);
+      if (!response.ok) throw new Error();
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setError('Could not download this attachment. Try again.');
+    } finally {
+      setDownloading(null);
+    }
+  }
+
+  return (
+    <div className="mt-2 font-radio-canada">
+      <ul aria-label="Saved attachments" className="flex flex-wrap gap-2">
+        {files.map((file, index) => (
+          <li key={index} className="max-w-full">
+            <button type="button" title={file.name} aria-label={`Download ${file.name}`}
+              disabled={downloading !== null} onClick={() => download(file, index)}
+              className="block max-w-full break-all rounded-lg bg-[#edf2f7] px-2.5 py-1 text-left text-xs text-[#244866] hover:bg-[#dbe8f4] disabled:opacity-60">
+              {downloading === index ? 'Downloading…' : file.name}
+              {file.pages && ` · PDF pages ${file.pages}`}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {error && <p role="alert" className="mt-1 text-xs text-current">{error}</p>}
+    </div>
+  );
+}
 
 export function AttachmentPicker({ attachments, setAttachments, notify, disabled }) {
   const input = useRef(null);

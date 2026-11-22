@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw, ImageFont
 from pypdf import PdfWriter
@@ -77,7 +78,8 @@ class UploadFlow(unittest.TestCase):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch.object(database, "_db_path", return_value=Path(directory) / "test.db"))
         self.enterContext(patch.dict(os.environ, {"TURSO_DATABASE_URL": "", "REQUIRE_REMOTE_DATABASE": "",
-                                                  "FEATURE_FILE_UPLOAD": FLAG}))
+                                                  "FEATURE_FILE_UPLOAD": FLAG,
+                                                  "WORKFLOW_ENCRYPTION_KEY": Fernet.generate_key().decode()}))
         self.client = self.enterContext(TestClient(app))
         self.client_id = str(uuid.uuid4())
         self.uid = f"test-{self.client_id}"
@@ -239,6 +241,38 @@ class UploadFlow(unittest.TestCase):
         override = self.client.put("/api/v1/file-capabilities/example", json={"maxContextTokens": 2000000})
         self.assertEqual(override.status_code, 404)
 
+    def test_saved_files_reopen_in_chat_and_cache_and_remain_private(self):
+        fixture = sample_pdf()
+        result = self.send("saved.pdf", fixture, "application/pdf", "2")
+        self.assertEqual(result["status"], "completed", result)
+        info = result["result"]["optiroute"]
+        chat = self.client.get(f"/api/v1/chats/{info['conversation_id']}").json()
+        saved = json.loads(chat["turns"][0]["response"])["optiroute"]
+        self.assertEqual(saved["attachment_files"][0]["pages"], "2")
+        route = f"/api/v1/chats/{info['chat_id']}/attachments/0"
+        self.assertEqual(self.client.get(route).content, fixture)
+        self.assertEqual(self.client.get(route).headers["cache-control"], "private, no-store")
+        cache = self.client.get("/api/v1/cache").json()
+        self.assertEqual(cache[0]["attachment_files"], saved["attachment_files"])
+        self.assertEqual(cache[0]["chat_id"], info["chat_id"])
+
+        response = self.client.post(API, json={
+            "conversation_id": info["conversation_id"], "messages": [{"role": "user", "content": "What is the label?"}],
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        follow_up = response.json()["optiroute"]
+        self.assertEqual(follow_up["attachment_source_chat_id"], info["chat_id"])
+        self.assertIn(MARKER, self.provider_payloads[-1]["messages"][-1]["content"])
+
+        client_id, uid = self.client_id, self.uid
+        self.client_id, self.uid = str(uuid.uuid4()), "unrelated"
+        self.assertEqual(self.client.get(route).status_code, 404)
+        self.client_id, self.uid = client_id, uid
+        self.assertEqual(self.client.delete(f"/api/v1/chats/{info['conversation_id']}").status_code, 200)
+        self.assertEqual(self.client.get(route).status_code, 404)
+        parts = self.client.portal.call(database.get_attachment_parts, info["chat_id"], client_id, info["conversation_id"], 0)
+        self.assertFalse(parts)
+
     def test_attachment_retry_escalates_after_medium_rate_limit(self):
         self.model_id = "openai/gpt-oss-20b"
         self.higher_models = {"mid": "qwen/qwen3.8-27b", "heavy": "openai/gpt-oss-120b"}
@@ -248,14 +282,24 @@ class UploadFlow(unittest.TestCase):
         self.assertEqual(initial["status"], "completed", initial)
         original = initial["result"]["optiroute"]
         self.assertEqual(original["tier"], "light")
-        result = self.send("label.txt", fixture, "text/plain",
-                           conversation_id=original["conversation_id"], retry_from_chat_id=original["chat_id"])
+        request_id = str(uuid.uuid4())
+        started = self.client.post(API + "/retry/jobs", json={
+            "request_id": request_id, "conversation_id": original["conversation_id"],
+            "retry_from_chat_id": original["chat_id"], "messages": [{"role": "user", "content": "Read the label."}],
+        })
+        self.assertEqual(started.status_code, 202, started.text)
+        for _ in range(150):
+            result = self.client.get(API + f"/{request_id}/status").json()
+            if result["status"] != "running":
+                break
+            time.sleep(0.1)
         self.assertEqual(result["status"], "completed", result)
         info = result["result"]["optiroute"]
         self.assertEqual(info["tier"], "heavy")
         self.assertTrue(info["manual_escalation"])
         self.assertFalse(info["cache_hit"])
         self.assertEqual(info["retry_from_chat_id"], original["chat_id"])
+        self.assertEqual(info["attachment_source_chat_id"], original["chat_id"])
         self.assertEqual([payload["model"] for payload in self.provider_payloads],
                          [self.model_id, self.higher_models["mid"], self.higher_models["heavy"]])
 
@@ -263,6 +307,7 @@ class UploadFlow(unittest.TestCase):
     def test_disabled_routes_and_text_cache(self):
         self.assertEqual(self.client.post(API + "/attachment-jobs").status_code, 404)
         self.assertEqual(self.client.get("/api/v1/file-capabilities").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/v1/chats/{uuid.uuid4()}/attachments/0").status_code, 404)
         prompt = {"messages": [{"role": "user", "content": "Read the label."}]}
         first = self.client.post(API, json=prompt)
         repeat = self.client.post(API, json=prompt)

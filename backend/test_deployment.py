@@ -26,6 +26,7 @@ import numpy as np
 async def verify_storage(path):
     async def connect():
         local = sqlite3.connect(path, check_same_thread=False)
+        local.execute("PRAGMA foreign_keys=ON")
         baton = None
         sequence = 0
         def server(request):
@@ -99,6 +100,8 @@ async def verify_storage(path):
                            response.model, "light", 0.0, 0.0)
         with patch.dict(os.environ, {"FEATURE_FILE_UPLOAD": "true",
                                      "WORKFLOW_ENCRYPTION_KEY": encryption_key.decode()}):
+            from optiroute.file_upload import Upload, encrypt_uploads, load_saved_upload
+
             await db.init_db()
             config, connected = await config_for_user(get_config(), "deployment-check")
             assert connected and config.tiers["light"].models[0].resolve_api_key() == "fixture-provider-key"
@@ -106,6 +109,18 @@ async def verify_storage(path):
             chat = await db.get_chat_by_id("existing-chat", "deployment-check")
             assert chat and chat["title"] == "Existing chat"
             assert await manager.check_cache(request, "deployment-check", "deployment-uid")
+            file = Upload("fixture.txt", "text/plain", b"sample content\n" * 47000, "")
+            parts = encrypt_uploads([file])
+            assert len(parts) > 1 and all("sample content" not in part[2] for part in parts)
+            await db.save_chat("file-chat", "deployment-check", "File chat", "Read this file",
+                               response.model_dump_json(), response.model, "light", 0.0, 0.0,
+                               attachment_parts=parts)
+            await db.init_db()
+            restored = await load_saved_upload("file-chat", "deployment-check", "file-chat", 0, vars(file))
+            assert restored.content == file.content
+            assert not await db.get_attachment_parts("file-chat", "other-owner", "file-chat", 0)
+            await db.delete_cache_entries("deployment-uid", "deployment-check", [], ["file-chat"])
+            assert not await db.get_attachment_parts("file-chat", "deployment-check", "file-chat", 0)
     finally:
         CacheManager._model = original_model
     assert (await db.get_user_by_firebase_uid("deployment-uid"))["organization_name"] == "Check"
