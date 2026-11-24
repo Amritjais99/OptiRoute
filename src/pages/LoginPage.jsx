@@ -6,19 +6,47 @@ import {
   getAdditionalUserInfo
 } from 'firebase/auth';
 import { auth } from '../utils/firebase';
-import { syncUser, handleFirebaseError } from '../utils/auth';
+import { syncUser, handleFirebaseError, useAuth } from '../utils/auth';
 import { signInWithGooglePopup } from '../utils/googlePopup';
 
+/* global __OPTIROUTE_PREVIEW__ */
 const LoginPage = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState('');
   const [resetEmail, setResetEmail] = useState('');
   const [showReset, setShowReset] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
+
+  const connectAccount = async (firebaseUser) => {
+    setConnecting(true);
+    setPassword('');
+    try {
+      const idToken = await firebaseUser.getIdToken(true);
+      await syncUser(idToken);
+      if (auth.currentUser?.uid === firebaseUser.uid) navigate('/dashboard/overview', { replace: true });
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleContinue = async () => {
+    if (!user || loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      await connectAccount(user);
+    } catch (err) {
+      setError(handleFirebaseError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -27,9 +55,7 @@ const LoginPage = () => {
     
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const idToken = await userCredential.user.getIdToken(true);
-      await syncUser(idToken);
-      navigate('/dashboard/overview');
+      await connectAccount(userCredential.user);
     } catch (err) {
       setError(handleFirebaseError(err));
     } finally {
@@ -50,9 +76,7 @@ const LoginPage = () => {
         throw new Error('user-not-found-google');
       }
 
-      const idToken = await userCredential.user.getIdToken(true);
-      await syncUser(idToken);
-      navigate('/dashboard/overview');
+      await connectAccount(userCredential.user);
     } catch (err) {
       if (err.message === 'user-not-found-google') {
         setError('User with this email does not exist. Please sign up first.');
@@ -100,6 +124,17 @@ const LoginPage = () => {
             <h2 className="font-radio-canada text-3xl font-semibold text-center text-text-primary mb-2">
               Welcome Back
             </h2>
+            {__OPTIROUTE_PREVIEW__ && (
+              <p className="text-center font-source-serif text-sm">
+                You’re on the test site. <a className="font-bold underline" href="https://optiroute-amritjais99.vercel.app/login">Open live OptiRoute</a> for your production chats and settings.
+              </p>
+            )}
+            {user && (
+              <button type="button" onClick={handleContinue} disabled={loading}
+                className="rounded-xl border border-[#a7bdd4] bg-white/80 px-4 py-3 text-sm font-semibold hover:bg-white disabled:opacity-60">
+                Continue to dashboard{user.email && <span className="block break-all font-normal">{user.email}</span>}
+              </button>
+            )}
             
             <div className="flex flex-col gap-1.5">
               <label className="font-source-serif text-[16px] text-text-primary">
@@ -171,7 +206,10 @@ const LoginPage = () => {
             )}
             
             {error && (
-              <p className="text-red-500 font-source-serif text-[14px]">{error}</p>
+              <p role="alert" className="text-red-700 font-source-serif text-[14px]">{error}</p>
+            )}
+            {connecting && (
+              <p role="status" className="font-source-serif text-sm">Connecting your account. This can take a minute when the server is starting.</p>
             )}
             
             <div className="flex flex-col gap-3">
