@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth } from './firebase';
+import { syncAccount } from './accountSync';
 
 const AuthContext = createContext();
 
@@ -42,24 +43,8 @@ export async function getAuthHeaders() {
   return { 'Authorization': `Bearer ${token}` };
 }
 
-export async function syncUser(idToken, organizationName) {
-  const body = {};
-  if (organizationName) {
-    body.organization_name = organizationName;
-  }
-  const response = await fetch(`${API_BASE}/api/auth/sync`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${idToken}`,
-    },
-    body: JSON.stringify(body),
-  });
-  
-  if (!response.ok) {
-    throw new Error('Failed to sync user');
-  }
-  return response.json();
+export function syncUser(idToken, organizationName) {
+  return syncAccount(`${API_BASE}/api/auth/sync`, idToken, organizationName);
 }
 
 export function handleFirebaseError(error) {
