@@ -64,9 +64,9 @@ test('stops on an invalid session and asks the user to sign in again', async (t)
   assert.deepEqual(waits, []);
 });
 
-test('offers a session-preserving retry after a sustained outage', async (t) => {
+test('asks the user to sign in again after a sustained outage', async (t) => {
   const { fetch } = mockRequests(t, ...Array.from({ length: 4 }, () => new Response('', { status: 503 })));
 
-  await assert.rejects(syncAccount(url, 'fixture-token'), /Continue to dashboard/);
+  await assert.rejects(syncAccount(url, 'fixture-token'), /try signing in again/);
   assert.equal(fetch.mock.callCount(), 4);
 });

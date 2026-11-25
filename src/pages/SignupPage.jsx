@@ -7,11 +7,12 @@ import {
   getAdditionalUserInfo
 } from 'firebase/auth';
 import { auth } from '../utils/firebase';
-import { syncUser, handleFirebaseError } from '../utils/auth';
+import { handleFirebaseError, useAuth } from '../utils/auth';
 import { signInWithGooglePopup } from '../utils/googlePopup';
 
 const SignupPage = () => {
   const navigate = useNavigate();
+  const { completeSignIn } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -59,8 +60,7 @@ const SignupPage = () => {
         await updateProfile(userCredential.user, { displayName: name });
       }
 
-      const idToken = await userCredential.user.getIdToken(true);
-      await syncUser(idToken, name);
+      await completeSignIn(userCredential.user, name);
       navigate('/dashboard/overview');
     } catch (err) {
       setError(handleFirebaseError(err));
@@ -86,8 +86,7 @@ const SignupPage = () => {
       
       if (hasPassword) {
         // Already has a password, just sync and login (unlikely for new user, but safe)
-        const idToken = await userCredential.user.getIdToken(true);
-        await syncUser(idToken, name || userCredential.user.displayName || '');
+        await completeSignIn(userCredential.user, name || userCredential.user.displayName || '');
         navigate('/dashboard/overview');
       } else {
         // Intercept to ask for password
@@ -121,8 +120,7 @@ const SignupPage = () => {
         await updateProfile(googleUser, { displayName: name });
       }
       
-      const idToken = await googleUser.getIdToken(true);
-      await syncUser(idToken, name);
+      await completeSignIn(googleUser, name);
       navigate('/dashboard/overview');
     } catch (err) {
       setError(handleFirebaseError(err));
