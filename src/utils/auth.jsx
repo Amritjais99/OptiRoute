@@ -4,6 +4,7 @@ import { auth } from './firebase';
 import { syncAccount } from './accountSync';
 
 const AuthContext = createContext();
+const SYNCED_USER_KEY = 'optiroute.syncedUser';
 
 /* global __OPTIROUTE_PROXY_API__ */
 export const API_BASE = __OPTIROUTE_PROXY_API__
@@ -11,23 +12,49 @@ export const API_BASE = __OPTIROUTE_PROXY_API__
   : import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [syncedUid, setSyncedUid] = useState(() => sessionStorage.getItem(SYNCED_USER_KEY));
   const [loading, setLoading] = useState(true);
+  const user = firebaseUser && firebaseUser.uid === syncedUid ? firebaseUser : null;
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+      if (!currentUser) {
+        sessionStorage.removeItem(SYNCED_USER_KEY);
+        setSyncedUid(null);
+      }
+      setFirebaseUser(currentUser);
       setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
   const signOut = () => {
+    sessionStorage.removeItem(SYNCED_USER_KEY);
+    setSyncedUid(null);
     return firebaseSignOut(auth);
   };
 
+  const completeSignIn = async (account, organizationName) => {
+    sessionStorage.removeItem(SYNCED_USER_KEY);
+    setSyncedUid(null);
+    try {
+      const token = await account.getIdToken(true);
+      await syncAccount(`${API_BASE}/api/auth/sync`, token, organizationName);
+      if (auth.currentUser !== account) {
+        throw new Error('Your sign-in session changed. Please sign in again.');
+      }
+      sessionStorage.setItem(SYNCED_USER_KEY, account.uid);
+      setFirebaseUser(account);
+      setSyncedUid(account.uid);
+    } catch (error) {
+      if (auth.currentUser === account) await signOut().catch(() => {});
+      throw error;
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signOut, completeSignIn }}>
       {children}
     </AuthContext.Provider>
   );
@@ -38,13 +65,11 @@ export function useAuth() {
 }
 
 export async function getAuthHeaders() {
-  if (!auth.currentUser) return {};
-  const token = await auth.currentUser.getIdToken();
+  const account = auth.currentUser;
+  if (!account || account.uid !== sessionStorage.getItem(SYNCED_USER_KEY)) return {};
+  const token = await account.getIdToken();
+  if (auth.currentUser !== account || account.uid !== sessionStorage.getItem(SYNCED_USER_KEY)) return {};
   return { 'Authorization': `Bearer ${token}` };
-}
-
-export function syncUser(idToken, organizationName) {
-  return syncAccount(`${API_BASE}/api/auth/sync`, idToken, organizationName);
 }
 
 export function handleFirebaseError(error) {
@@ -79,6 +104,7 @@ export async function apiCall(url, options = {}) {
   const mergedHeaders = { ...headers, ...(options.headers || {}) };
   const res = await fetch(url, { ...options, headers: mergedHeaders });
   if (res.status === 401) {
+    sessionStorage.removeItem(SYNCED_USER_KEY);
     firebaseSignOut(auth);
     window.location.href = '/login';
     throw new Error('Session expired');

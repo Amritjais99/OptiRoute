@@ -7,6 +7,7 @@ import { auth } from './firebase';
 export function signInWithGooglePopup() {
   const previousUser = auth.currentUser;
   const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
 
   return new Promise((resolve, reject) => {
     let settled = false;

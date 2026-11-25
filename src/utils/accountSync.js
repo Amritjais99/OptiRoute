@@ -36,7 +36,7 @@ export async function syncAccount(url, idToken, organizationName) {
       }
       if (response.headers.get('cf-mitigated') === 'challenge' ||
           (!isJson && [403, 429].includes(response.status))) {
-        throw new Error('OptiRoute’s hosting service is blocking the connection. Try Continue to dashboard again in a few minutes.');
+        throw new Error('OptiRoute’s hosting service blocked the connection. Please try signing in again in a few minutes.');
       }
       if (response.status === 401 || response.status === 403) {
         throw new Error('OptiRoute could not verify this sign-in session. Please sign in again.');
@@ -51,5 +51,5 @@ export async function syncAccount(url, idToken, organizationName) {
     if (delay > MAX_RETRY_AFTER) break;
     await new Promise(resolve => setTimeout(resolve, delay));
   }
-  throw new Error('OptiRoute’s backend is temporarily unavailable. Use Continue to dashboard to retry without entering your password again.');
+  throw new Error('OptiRoute’s backend is temporarily unavailable. Please try signing in again in a few minutes.');
 }
