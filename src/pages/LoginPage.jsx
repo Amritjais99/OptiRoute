@@ -6,13 +6,13 @@ import {
   getAdditionalUserInfo
 } from 'firebase/auth';
 import { auth } from '../utils/firebase';
-import { syncUser, handleFirebaseError, useAuth } from '../utils/auth';
+import { handleFirebaseError, useAuth } from '../utils/auth';
 import { signInWithGooglePopup } from '../utils/googlePopup';
 
 /* global __OPTIROUTE_PREVIEW__ */
 const LoginPage = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { completeSignIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -27,24 +27,10 @@ const LoginPage = () => {
     setConnecting(true);
     setPassword('');
     try {
-      const idToken = await firebaseUser.getIdToken(true);
-      await syncUser(idToken);
-      if (auth.currentUser?.uid === firebaseUser.uid) navigate('/dashboard/overview', { replace: true });
+      await completeSignIn(firebaseUser);
+      navigate('/dashboard/overview', { replace: true });
     } finally {
       setConnecting(false);
-    }
-  };
-
-  const handleContinue = async () => {
-    if (!user || loading) return;
-    setLoading(true);
-    setError('');
-    try {
-      await connectAccount(user);
-    } catch (err) {
-      setError(handleFirebaseError(err));
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -128,12 +114,6 @@ const LoginPage = () => {
               <p className="text-center font-source-serif text-sm">
                 You’re on the test site. <a className="font-bold underline" href="https://optiroute-amritjais99.vercel.app/login">Open live OptiRoute</a> for your production chats and settings.
               </p>
-            )}
-            {user && (
-              <button type="button" onClick={handleContinue} disabled={loading}
-                className="rounded-xl border border-[#a7bdd4] bg-white/80 px-4 py-3 text-sm font-semibold hover:bg-white disabled:opacity-60">
-                Continue to dashboard{user.email && <span className="block break-all font-normal">{user.email}</span>}
-              </button>
             )}
             
             <div className="flex flex-col gap-1.5">
